@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#5f6368"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#188038"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#1a73e8"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#f9ab00"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="640" y="32" text-anchor="middle" font-size="22" font-weight="700" fill="#202124">OpenClaw on Agent Substrate — Split, Multi-Tenant Architecture</text>
+  <text x="640" y="54" text-anchor="middle" font-size="13" fill="#5f6368">One always-on gateway serves every conversation; each conversation gets its own suspendable actor. Boxes are colored by ownership.</text>
+
+  <!-- Conversations (many, external) -->
+  <text x="98" y="150" text-anchor="middle" font-size="11" font-weight="700" fill="#1a73e8">MANY CONVERSATIONS</text>
+  <rect x="40" y="188" width="140" height="92" rx="8" fill="#d2e3fc" stroke="#1a73e8" stroke-width="1.2"/>
+  <rect x="32" y="178" width="140" height="92" rx="8" fill="#e8f0fe" stroke="#1a73e8" stroke-width="1.2"/>
+  <rect x="24" y="168" width="140" height="92" rx="8" fill="#e8f0fe" stroke="#1a73e8" stroke-width="2"/>
+  <text x="94" y="196" text-anchor="middle" font-size="13" font-weight="700" fill="#1a73e8">User / chat</text>
+  <text x="94" y="216" text-anchor="middle" font-size="10" fill="#5f6368">(accountId, peer)</text>
+  <text x="94" y="234" text-anchor="middle" font-size="10" fill="#5f6368">WhatsApp / Slack /</text>
+  <text x="94" y="248" text-anchor="middle" font-size="10" fill="#5f6368">Discord / …</text>
+
+  <!-- GKE cluster boundary -->
+  <rect x="205" y="78" width="1055" height="712" rx="10" fill="none" stroke="#9aa0a6" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="224" y="98" font-size="12" font-weight="700" fill="#5f6368">GKE cluster</text>
+
+  <!-- ================= GATEWAY (always-on, multi-tenant) ================= -->
+  <rect x="228" y="130" width="366" height="404" rx="8" fill="#e6f4ea" stroke="#188038" stroke-width="2.5"/>
+  <text x="411" y="154" text-anchor="middle" font-size="15" font-weight="700" fill="#188038">OpenClaw Gateway</text>
+  <text x="411" y="171" text-anchor="middle" font-size="10.5" font-weight="700" fill="#188038">ALWAYS-ON · MULTI-TENANT</text>
+  <text x="411" y="186" text-anchor="middle" font-size="9.5" fill="#5f6368">one process — all channels, all conversations (~128–256 MB)</text>
+
+  <!-- OpenClaw parts (green/white) -->
+  <rect x="246" y="196" width="330" height="52" rx="5" fill="#ffffff" stroke="#81c995" stroke-width="1.2"/>
+  <text x="411" y="215" text-anchor="middle" font-size="11" font-weight="700" fill="#202124">Channel plugins — OpenClaw (UNCHANGED)</text>
+  <text x="411" y="233" text-anchor="middle" font-size="9.5" fill="#5f6368">WhatsApp (Baileys WS) · Telegram · Slack · Discord · …</text>
+
+  <rect x="246" y="254" width="330" height="42" rx="5" fill="#ffffff" stroke="#81c995" stroke-width="1.2"/>
+  <text x="411" y="272" text-anchor="middle" font-size="11" font-weight="700" fill="#202124">ACP bindings router — OpenClaw</text>
+  <text x="411" y="288" text-anchor="middle" font-size="9.5" fill="#5f6368">type:"acp" · backend:"substrate"</text>
+
+  <!-- Our plugin parts (amber) -->
+  <rect x="246" y="304" width="330" height="46" rx="5" fill="#fef7e0" stroke="#f9ab00" stroke-width="1.5"/>
+  <text x="411" y="322" text-anchor="middle" font-size="11" font-weight="700" fill="#b06000">SubstrateAcpRuntime — NEW</text>
+  <text x="411" y="339" text-anchor="middle" font-size="9.5" fill="#5f6368">POST /v1/chat/completions · parse SSE → events</text>
+
+  <rect x="246" y="356" width="330" height="46" rx="5" fill="#fef7e0" stroke="#f9ab00" stroke-width="1.5"/>
+  <text x="411" y="374" text-anchor="middle" font-size="11" font-weight="700" fill="#b06000">actor-router + provisioner — NEW</text>
+  <text x="411" y="391" text-anchor="middle" font-size="9.5" fill="#5f6368">(accountId, peer) → conv-&lt;hash&gt; · create-if-absent</text>
+
+  <rect x="246" y="408" width="330" height="58" rx="5" fill="#fef7e0" stroke="#f9ab00" stroke-width="1.5"/>
+  <text x="411" y="426" text-anchor="middle" font-size="11" font-weight="700" fill="#b06000">idle-suspender — NEW</text>
+  <text x="411" y="443" text-anchor="middle" font-size="9.5" fill="#5f6368">turn-aware idle → ateapi.SuspendActor()</text>
+  <text x="411" y="457" text-anchor="middle" font-size="9" fill="#b06000">gateway holds the control-plane creds (the actor doesn't)</text>
+
+  <text x="411" y="486" text-anchor="middle" font-size="9.5" fill="#5f6368">the plugin (~800 LOC) runs entirely here, in the gateway role</text>
+  <rect x="246" y="496" width="330" height="28" rx="5" fill="#e6f4ea" stroke="#81c995" stroke-width="1"/>
+  <text x="411" y="514" text-anchor="middle" font-size="9.5" fill="#188038">Plugin SDK / hook API · cron · Control UI — OpenClaw</text>
+
+  <!-- ================= ACTORS (one per conversation, suspendable) ================= -->
+  <text x="812" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#a142f4">SUSPENDABLE — one actor per conversation (conv-&lt;hash&gt;)</text>
+  <!-- stacked shadows imply many -->
+  <rect x="692" y="152" width="300" height="330" rx="8" fill="#eef8f1" stroke="#81c995" stroke-width="1.5"/>
+  <rect x="680" y="142" width="300" height="330" rx="8" fill="#eef8f1" stroke="#81c995" stroke-width="1.5"/>
+  <rect x="668" y="132" width="300" height="330" rx="8" fill="#e6f4ea" stroke="#188038" stroke-width="2.5"/>
+  <text x="818" y="156" text-anchor="middle" font-size="15" font-weight="700" fill="#188038">Agent Actor — OpenClaw</text>
+  <text x="818" y="173" text-anchor="middle" font-size="9.5" fill="#5f6368">gVisor sandbox · role: plain OpenClaw · no channels</text>
+
+  <rect x="686" y="188" width="264" height="84" rx="5" fill="#ffffff" stroke="#81c995" stroke-width="1.2"/>
+  <text x="818" y="207" text-anchor="middle" font-size="11" font-weight="700" fill="#202124">/v1/chat/completions — OpenClaw</text>
+  <text x="818" y="226" text-anchor="middle" font-size="9.5" fill="#5f6368">full agentic loop:</text>
+  <text x="818" y="242" text-anchor="middle" font-size="9.5" fill="#5f6368">LLM → tool use → LLM → reply</text>
+  <text x="818" y="260" text-anchor="middle" font-size="9.5" fill="#5f6368">SOUL.md · memory · skills</text>
+
+  <rect x="686" y="282" width="264" height="66" rx="5" fill="#ffffff" stroke="#81c995" stroke-width="1.2"/>
+  <text x="818" y="301" text-anchor="middle" font-size="11" font-weight="700" fill="#202124">DurableDir (persistent, per conversation)</text>
+  <text x="818" y="319" text-anchor="middle" font-size="9.5" fill="#5f6368">SQLite state · memory · SOUL.md</text>
+  <text x="818" y="335" text-anchor="middle" font-size="9.5" fill="#5f6368">survives suspend / resume</text>
+
+  <rect x="686" y="358" width="264" height="44" rx="5" fill="#f3e8fd" stroke="#a142f4" stroke-width="1.2"/>
+  <text x="818" y="376" text-anchor="middle" font-size="10" font-weight="700" fill="#a142f4">no control-plane credentials</text>
+  <text x="818" y="392" text-anchor="middle" font-size="9.5" fill="#5f6368">given only its name at /run/ate/actor-id</text>
+
+  <text x="818" y="428" text-anchor="middle" font-size="9.5" fill="#5f6368">suspends to a gVisor snapshot when idle;</text>
+  <text x="818" y="444" text-anchor="middle" font-size="9.5" fill="#5f6368">frees its worker pod — resumes on the next turn</text>
+
+  <!-- Gemini (external) -->
+  <rect x="1084" y="200" width="150" height="80" rx="8" fill="#e8f0fe" stroke="#1a73e8" stroke-width="2"/>
+  <text x="1159" y="234" text-anchor="middle" font-size="13" font-weight="700" fill="#1a73e8">Gemini API</text>
+  <text x="1159" y="254" text-anchor="middle" font-size="10" fill="#5f6368">LLM (external)</text>
+
+  <!-- ================= SUBSTRATE (bottom) ================= -->
+  <text x="430" y="560" text-anchor="middle" font-size="11" font-weight="700" fill="#d93025">AGENT SUBSTRATE (control plane + data plane)</text>
+
+  <!-- atenet router -->
+  <rect x="360" y="574" width="420" height="66" rx="8" fill="#fce8e6" stroke="#d93025" stroke-width="2"/>
+  <text x="570" y="597" text-anchor="middle" font-size="12.5" font-weight="700" fill="#d93025">atenet router (Envoy + ext_proc) — Substrate</text>
+  <text x="570" y="616" text-anchor="middle" font-size="9.5" fill="#5f6368">parse Host → ResumeActor() if suspended (gVisor restore &lt;1s)</text>
+  <text x="570" y="630" text-anchor="middle" font-size="9.5" fill="#5f6368">→ forward request to the actor's worker pod</text>
+
+  <!-- control plane -->
+  <rect x="228" y="668" width="430" height="92" rx="8" fill="#fce8e6" stroke="#d93025" stroke-width="1.8"/>
+  <text x="443" y="690" text-anchor="middle" font-size="12" font-weight="700" fill="#d93025">Substrate control plane (ate-system)</text>
+  <text x="443" y="709" text-anchor="middle" font-size="9.5" fill="#5f6368">ateapi (valkey state) · atecontroller (golden capture)</text>
+  <text x="443" y="724" text-anchor="middle" font-size="9.5" fill="#5f6368">atelet — snapshot ↔ GCS · ateom-gvisor (runsc) · atenet-dns</text>
+  <text x="443" y="744" text-anchor="middle" font-size="9.5" fill="#5f6368">CRDs: WorkerPool · ActorTemplate · SandboxConfig (ate.dev)</text>
+
+  <!-- workerpool -->
+  <rect x="676" y="668" width="292" height="92" rx="8" fill="#fce8e6" stroke="#d93025" stroke-width="1.8"/>
+  <text x="822" y="694" text-anchor="middle" font-size="12" font-weight="700" fill="#d93025">WorkerPool — gVisor worker pods</text>
+  <text x="822" y="716" text-anchor="middle" font-size="9.5" fill="#5f6368">actors restore here on demand;</text>
+  <text x="822" y="732" text-anchor="middle" font-size="9.5" fill="#5f6368">pod freed when the actor suspends</text>
+  <text x="822" y="750" text-anchor="middle" font-size="9.5" fill="#5f6368">M ≪ N pods shared across all actors</text>
+
+  <!-- ================= ARROWS ================= -->
+  <!-- conversations <-> gateway -->
+  <line x1="164" y1="212" x2="226" y2="222" stroke="#188038" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <line x1="226" y1="238" x2="164" y2="236" stroke="#188038" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrowGreen)"/>
+  <text x="150" y="300" font-size="9" fill="#188038">persistent WS (all users)</text>
+
+  <!-- gateway -> atenet (HTTP to actor URL) -->
+  <path d="M 470 534 L 470 574" stroke="#1a73e8" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+  <text x="478" y="558" font-size="9" fill="#1a73e8">HTTP → actor URL</text>
+
+  <!-- atenet -> actor (resume + forward) -->
+  <path d="M 780 600 L 818 600 L 818 464" stroke="#1a73e8" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+  <text x="826" y="540" font-size="9" fill="#1a73e8">resume + forward</text>
+
+  <!-- actor -> gemini -->
+  <line x1="968" y1="230" x2="1082" y2="235" stroke="#5f6368" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- idle-suspender (gateway) -> control plane (SuspendActor) -->
+  <path d="M 300 466 L 300 668" stroke="#f9ab00" stroke-width="2" fill="none" stroke-dasharray="5 3" marker-end="url(#arrowAmber)"/>
+  <text x="238" y="620" font-size="9" font-weight="700" fill="#b06000">SuspendActor</text>
+  <text x="238" y="632" font-size="8.5" fill="#b06000">(create/resume too)</text>
+
+  <!-- atenet -> control plane -->
+  <path d="M 500 640 L 500 668" stroke="#d93025" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- control plane <-> workerpool -->
+  <line x1="658" y1="708" x2="674" y2="708" stroke="#d93025" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="674" y1="722" x2="658" y2="722" stroke="#d93025" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ================= LEGEND (ownership) ================= -->
+  <rect x="1004" y="600" width="256" height="160" rx="8" fill="#f8f9fa" stroke="#dadce0" stroke-width="1"/>
+  <text x="1132" y="622" text-anchor="middle" font-size="11" font-weight="700" fill="#5f6368">Ownership</text>
+  <rect x="1018" y="634" width="16" height="12" fill="#e6f4ea" stroke="#188038"/><text x="1042" y="644" font-size="10" fill="#3c4043">OpenClaw (upstream, unchanged)</text>
+  <rect x="1018" y="656" width="16" height="12" fill="#fce8e6" stroke="#d93025"/><text x="1042" y="666" font-size="10" fill="#3c4043">Substrate (upstream)</text>
+  <rect x="1018" y="678" width="16" height="12" fill="#fef7e0" stroke="#f9ab00"/><text x="1042" y="688" font-size="10" fill="#3c4043">New — built by us (the plugin)</text>
+  <rect x="1018" y="700" width="16" height="12" fill="#e8f0fe" stroke="#1a73e8"/><text x="1042" y="710" font-size="10" fill="#3c4043">External (user, LLM)</text>
+  <text x="1018" y="732" font-size="9" fill="#5f6368">+ 4 small upstreamable fixes to</text>
+  <text x="1018" y="745" font-size="9" fill="#5f6368">Substrate (see substrate-patches/).</text>
+</svg>

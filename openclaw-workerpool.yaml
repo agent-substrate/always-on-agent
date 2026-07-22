@@ -1,0 +1,28 @@
+# WorkerPool for the OpenClaw agent actors (Agent Substrate, current OSS schema:
+# ate.dev/v1alpha1). Worker pods run the gVisor ateom (ateomImage). The runsc
+# binary is NOT pinned here — it comes from the cluster's gVisor SandboxConfig
+# (see NOTE below). The ActorTemplate's workerSelector matches this pool's label.
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    workload: openclaw
+spec:
+  replicas: 2
+  # ko-resolved at deploy time (ko apply / ko resolve). Pin to a digest for prod.
+  ateomImage: ko://github.com/agent-substrate/substrate/cmd/ateom-gvisor
+  sandboxClass: gvisor
+  # Optional: pin workers to a node pool and size them.
+  # template:
+  #   spec:
+  #     nodeSelector: { cloud.google.com/gke-nodepool: openclaw-pool }
+  #     containers:
+  #       - resources:
+  #           requests: { memory: 512Mi, cpu: 250m }
+  #           limits:   { memory: 2Gi,   cpu: "1" }
+# NOTE (gVisor runsc): the cluster-default gvisor SandboxConfig pins the runsc
+# binary. Public gvisor.dev releases crash a heavy multi-process Node.js actor
+# (OpenClaw) mid-init; use the GKE-Sandbox runsc build. See
+# manifests/ate-install/sandboxconfig-gvisor.yaml in agent-substrate/substrate.

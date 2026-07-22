@@ -1,0 +1,12 @@
+{
+  "name": "openclaw-substrate-dashboard",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node dashboard.js"
+  },
+  "dependencies": {
+    "hono": "^4.7.0",
+    "@hono/node-server": "^1.14.0"
+  }
+}

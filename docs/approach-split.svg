@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="600" viewBox="0 0 1080 600" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#5f6368"/></marker>
+    <marker id="ag" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#188038"/></marker>
+    <marker id="ab" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#1a73e8"/></marker>
+  </defs>
+
+  <text x="540" y="32" text-anchor="middle" font-size="20" font-weight="700" fill="#202124">Approach A — Split (current)</text>
+  <text x="540" y="56" text-anchor="middle" font-size="13" fill="#188038" font-weight="700">Channels stay always-on (cheap); the expensive agent suspends. Uniform for both channel types. Zero channel code changes.</text>
+
+  <!-- Persistent channel (external platform) -->
+  <rect x="24" y="112" width="196" height="86" rx="8" fill="#e8f0fe" stroke="#1a73e8" stroke-width="2"/>
+  <text x="122" y="136" text-anchor="middle" font-size="13" font-weight="700" fill="#1a73e8">Persistent channel</text>
+  <text x="122" y="155" text-anchor="middle" font-size="9.5" fill="#5f6368">WhatsApp · Discord · Slack</text>
+  <text x="122" y="169" text-anchor="middle" font-size="9.5" fill="#5f6368">Signal · Matrix · iMessage</text>
+  <text x="122" y="187" text-anchor="middle" font-size="9" fill="#1a73e8">outbound WebSocket held open</text>
+
+  <!-- Webhook channel (external platform) -->
+  <rect x="24" y="316" width="196" height="86" rx="8" fill="#e8f0fe" stroke="#1a73e8" stroke-width="2"/>
+  <text x="122" y="340" text-anchor="middle" font-size="13" font-weight="700" fill="#1a73e8">Webhook channel</text>
+  <text x="122" y="359" text-anchor="middle" font-size="9.5" fill="#5f6368">Telegram · Teams · LINE</text>
+  <text x="122" y="373" text-anchor="middle" font-size="9.5" fill="#5f6368">Feishu · SMS · Google Chat</text>
+  <text x="122" y="391" text-anchor="middle" font-size="9" fill="#1a73e8">platform POSTs to a URL</text>
+
+  <!-- Gateway (OpenClaw, always-on, multi-tenant) -->
+  <rect x="312" y="128" width="284" height="266" rx="10" fill="#e6f4ea" stroke="#188038" stroke-width="2.5"/>
+  <text x="454" y="152" text-anchor="middle" font-size="15" font-weight="700" fill="#188038">Gateway — OpenClaw</text>
+  <rect x="356" y="162" width="196" height="20" rx="10" fill="#188038"/>
+  <text x="454" y="176" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">ALWAYS-ON · MULTI-TENANT</text>
+  <text x="454" y="199" text-anchor="middle" font-size="9.5" fill="#5f6368">one process · serves every conversation · ~128–256 MB</text>
+
+  <rect x="330" y="210" width="248" height="56" rx="5" fill="#ffffff" stroke="#81c995" stroke-width="1.2"/>
+  <text x="454" y="230" text-anchor="middle" font-size="10.5" font-weight="700" fill="#202124">All channel plugins — OpenClaw (UNCHANGED)</text>
+  <text x="454" y="248" text-anchor="middle" font-size="9" fill="#5f6368">holds persistent sockets AND receives webhooks</text>
+  <text x="454" y="261" text-anchor="middle" font-size="9" fill="#5f6368">maps (accountId, peer) → one actor each</text>
+
+  <rect x="330" y="274" width="248" height="72" rx="5" fill="#fef7e0" stroke="#f9ab00" stroke-width="1.5"/>
+  <text x="454" y="294" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b06000">ACP router → Substrate backend</text>
+  <text x="454" y="310" text-anchor="middle" font-size="9.5" font-weight="700" fill="#b06000">NEW — our ~800-LOC plugin</text>
+  <text x="454" y="326" text-anchor="middle" font-size="9" fill="#5f6368">delegates the turn over HTTP;</text>
+  <text x="454" y="339" text-anchor="middle" font-size="9" fill="#5f6368">drives create / resume / suspend</text>
+
+  <!-- atenet (Substrate) -->
+  <rect x="648" y="238" width="130" height="72" rx="8" fill="#fce8e6" stroke="#d93025" stroke-width="2"/>
+  <text x="713" y="262" text-anchor="middle" font-size="12" font-weight="700" fill="#d93025">atenet</text>
+  <text x="713" y="279" text-anchor="middle" font-size="9" fill="#5f6368">Substrate</text>
+  <text x="713" y="294" text-anchor="middle" font-size="9" fill="#5f6368">resume-on-demand &lt;1s</text>
+
+  <!-- Agent actors (OpenClaw, suspend, one per conversation) -->
+  <rect x="862" y="191" width="196" height="176" rx="10" fill="#eef8f1" stroke="#81c995" stroke-width="1.5"/>
+  <rect x="854" y="183" width="196" height="176" rx="10" fill="#eef8f1" stroke="#81c995" stroke-width="1.5"/>
+  <rect x="846" y="175" width="196" height="176" rx="10" fill="#e6f4ea" stroke="#188038" stroke-width="2.5"/>
+  <text x="944" y="199" text-anchor="middle" font-size="13.5" font-weight="700" fill="#188038">Agent Actor — OpenClaw</text>
+  <text x="944" y="217" text-anchor="middle" font-size="11.5" font-weight="700" fill="#a142f4">SUSPENDS when idle</text>
+  <text x="944" y="234" text-anchor="middle" font-size="10" font-weight="700" fill="#188038">one per conversation</text>
+  <text x="944" y="251" text-anchor="middle" font-size="9.5" fill="#5f6368">agent loop · LLM · tools · memory</text>
+  <rect x="864" y="262" width="160" height="72" rx="5" fill="#fce8e6" stroke="#d93025" stroke-width="1.2"/>
+  <text x="944" y="281" text-anchor="middle" font-size="10" font-weight="700" fill="#d93025">gVisor snapshot → GCS</text>
+  <text x="944" y="298" text-anchor="middle" font-size="9" fill="#5f6368">Substrate · worker pod freed</text>
+  <text x="944" y="312" text-anchor="middle" font-size="9" fill="#5f6368">while idle; state in DurableDir</text>
+  <text x="944" y="326" text-anchor="middle" font-size="9" fill="#5f6368">resumes on the next turn</text>
+
+  <!-- arrows -->
+  <line x1="220" y1="150" x2="310" y2="220" stroke="#188038" stroke-width="2" marker-end="url(#ag)"/>
+  <line x1="220" y1="360" x2="310" y2="300" stroke="#188038" stroke-width="2" marker-end="url(#ag)"/>
+  <line x1="596" y1="274" x2="646" y2="274" stroke="#1a73e8" stroke-width="2" marker-end="url(#ab)"/>
+  <line x1="778" y1="270" x2="844" y2="262" stroke="#1a73e8" stroke-width="2" marker-end="url(#ab)"/>
+
+  <!-- cost note -->
+  <rect x="24" y="430" width="612" height="140" rx="8" fill="#f8f9fa" stroke="#dadce0"/>
+  <text x="330" y="456" text-anchor="middle" font-size="12" font-weight="700" fill="#202124">Cost profile</text>
+  <text x="330" y="480" text-anchor="middle" font-size="10.5" fill="#5f6368">Always-on = ONE multi-tenant gateway for all users</text>
+  <text x="330" y="497" text-anchor="middle" font-size="10.5" fill="#5f6368">(per-user always-on cost → 0).</text>
+  <text x="330" y="521" text-anchor="middle" font-size="10.5" fill="#5f6368">The heavy agent suspends when idle; on wake only the agent</text>
+  <text x="330" y="537" text-anchor="middle" font-size="10.5" fill="#5f6368">reloads, not the channels.</text>
+  <text x="330" y="559" text-anchor="middle" font-size="10.5" font-weight="700" fill="#188038">Works for every channel type · no channel code changes.</text>
+
+  <!-- ownership legend -->
+  <rect x="660" y="430" width="396" height="140" rx="8" fill="#ffffff" stroke="#dadce0"/>
+  <text x="682" y="456" font-size="12" font-weight="700" fill="#202124">Ownership</text>
+  <rect x="682" y="470" width="18" height="13" fill="#e6f4ea" stroke="#188038"/><text x="710" y="481" font-size="11" fill="#3c4043">OpenClaw (upstream, unchanged)</text>
+  <rect x="682" y="494" width="18" height="13" fill="#fce8e6" stroke="#d93025"/><text x="710" y="505" font-size="11" fill="#3c4043">Substrate (upstream)</text>
+  <rect x="682" y="518" width="18" height="13" fill="#fef7e0" stroke="#f9ab00"/><text x="710" y="529" font-size="11" fill="#3c4043">New — built by us (the plugin)</text>
+  <rect x="682" y="542" width="18" height="13" fill="#e8f0fe" stroke="#1a73e8"/><text x="710" y="553" font-size="11" fill="#3c4043">External (channel platform)</text>
+</svg>

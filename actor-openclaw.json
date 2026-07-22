@@ -1,0 +1,12 @@
+{
+  "gateway": {
+    "port": 80,
+    "bind": "lan",
+    "mode": "local",
+    "auth": { "mode": "token" },
+    "controlUi": { "enabled": false },
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+  },
+  "agents": { "defaults": { "model": "google/gemini-3-flash-preview" } },
+  "channels": {}
+}

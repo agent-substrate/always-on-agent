@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-gateway-config
+  namespace: openclaw
+data:
+  openclaw.json: |
+    {
+      "plugins": {
+        "allow": ["substrate", "whatsapp"],
+        "entries": {
+          "substrate": {
+            "enabled": true,
+            "config": {
+              "role": "gateway",
+              "atespace": "openclaw-demo",
+              "idleTimeoutSeconds": 10,
+              "template": "openclaw/openclaw-agent",
+              "actorDomain": "actors.resources.substrate.ate.dev",
+              "actorToken": "${OPENCLAW_GATEWAY_TOKEN}",
+              "provisioner": "kubectl-ate",
+              "kubectlAtePath": "/usr/local/bin/kubectl-ate",
+              "ateapiAddress": "api.ate-system.svc.cluster.local:443"
+            }
+          }
+        }
+      },
+      "acp": {
+        "enabled": true,
+        "backend": "substrate"
+      },
+      "agents": {
+        "defaults": { "model": "google/gemini-3-flash-preview" }
+      },
+      "cron": {
+        "enabled": true,
+        "store": "/home/node/.openclaw/cron/jobs.json"
+      },
+      "bindings": [
+        {
+          "type": "acp",
+          "agentId": "main",
+          "match": {
+            "channel": "whatsapp",
+            "accountId": "default",
+            "peer": { "kind": "direct", "id": "*" }
+          },
+          "acp": { "backend": "substrate" }
+        }
+      ],
+      "gateway": {
+        "mode": "local",
+        "port": 18789,
+        "bind": "lan",
+        "controlUi": {
+          "enabled": true,
+          "allowedOrigins": ["http://localhost:18789"],
+          "allowInsecureAuth": true,
+          "dangerouslyDisableDeviceAuth": true
+        },
+        "auth": { "mode": "token" }
+      },
+      "channels": {
+        "whatsapp": {}
+      }
+    }

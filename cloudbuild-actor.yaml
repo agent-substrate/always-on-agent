@@ -1,0 +1,5 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "actor.Dockerfile", "-t", "gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-actor:demo", "."]
+images:
+  - "gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-actor:demo"

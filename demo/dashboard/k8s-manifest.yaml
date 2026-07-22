@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-dashboard
+  namespace: openclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openclaw-dashboard
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+  # kubectl-ate auto-port-forwards to the ateapi to list actors.
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create", "get"]
+  # kubectl-ate reads the ate-api-server Deployment to detect auth mode + endpoint.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["ate.dev"]
+    resources: ["workerpools", "actortemplates"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openclaw-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-dashboard
+    namespace: openclaw
+roleRef:
+  kind: ClusterRole
+  name: openclaw-dashboard
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-dashboard
+  namespace: openclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openclaw-dashboard
+  template:
+    metadata:
+      labels:
+        app: openclaw-dashboard
+    spec:
+      serviceAccountName: openclaw-dashboard
+      containers:
+        - name: dashboard
+          image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-dashboard@sha256:392fddeb91ecb0c716d7ae7ee33fd70c37fabde6565258f31864c6bd593241d5
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8090
+              name: http
+          env:
+            - name: NAMESPACE
+              value: openclaw
+            - name: ATE_ENDPOINT
+              value: "api.ate-system.svc.cluster.local:443"
+            - name: GATEWAY_URL
+              value: "http://openclaw-gateway.openclaw.svc.cluster.local:18789"
+            - name: KUBECTL_ATE
+              value: "/opt/bin/kubectl-ate"
+            # Atespace(s) the demo actors live in (current OSS actor model).
+            - name: ATESPACES
+              value: "openclaw-demo"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 25m
+            limits:
+              memory: 128Mi
+              cpu: 100m
+          volumeMounts:
+            - name: kubectl-ate
+              mountPath: /opt/bin
+      volumes:
+        - name: kubectl-ate
+          emptyDir: {}
+      initContainers:
+        - name: fetch-kubectl-ate
+          image: golang:1.26-bookworm
+          command: ["sh", "-c"]
+          args:
+            - |
+              apt-get update && apt-get install -y git
+              git clone --depth=1 https://github.com/agent-substrate/substrate.git /tmp/substrate
+              cd /tmp/substrate && go build -o /opt/bin/kubectl-ate ./cmd/kubectl-ate
+          volumeMounts:
+            - name: kubectl-ate
+              mountPath: /opt/bin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-dashboard
+  namespace: openclaw
+spec:
+  type: LoadBalancer
+  selector:
+    app: openclaw-dashboard
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http

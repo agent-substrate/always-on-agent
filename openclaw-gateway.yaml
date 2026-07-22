@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openclaw
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-gateway
+  namespace: openclaw
+---
+# RBAC for kubectl-ate (per-conversation actor provisioning): it port-forwards to
+# the ateapi pod and reads the ate-api-server Deployment to detect auth mode.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openclaw-gateway
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create", "get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["ate.dev"]
+    resources: ["workerpools", "actortemplates"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openclaw-gateway
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-gateway
+    namespace: openclaw
+roleRef:
+  kind: ClusterRole
+  name: openclaw-gateway
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-gateway
+  namespace: openclaw
+spec:
+  # LoadBalancer to match the live Control UI service (external IP preserved).
+  type: LoadBalancer
+  selector:
+    app: openclaw-gateway
+  ports:
+    - name: gateway
+      port: 18789
+      targetPort: gateway
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-gateway
+  namespace: openclaw
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openclaw-gateway
+  template:
+    metadata:
+      labels:
+        app: openclaw-gateway
+    spec:
+      serviceAccountName: openclaw-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Copy the gateway config onto the PVC, then install the substrate plugin
+        # into the PVC state dir (its registry lives under .openclaw, so it must be
+        # installed at runtime, not baked into the image). Config is copied first so
+        # `plugins install`'s config validation (which requires role) passes.
+        - name: config-and-plugin-init
+          image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway@REPLACE_WITH_GATEWAY_DIGEST
+          command: ["sh", "-c"]
+          args:
+            - |
+              cp /config/openclaw.json /home/node/.openclaw/openclaw.json
+              node /app/dist/index.js plugins install /app/extensions/substrate --force
+          env:
+            - name: HOME
+              value: /home/node
+            - name: OPENCLAW_CONFIG_DIR
+              value: /home/node/.openclaw
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node/.openclaw
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tmp-volume
+              mountPath: /tmp
+      containers:
+        - name: gateway
+          # OpenClaw slim + compiled substrate plugin + kubectl-ate (built by gateway.Dockerfile).
+          image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway@REPLACE_WITH_GATEWAY_DIGEST
+          command:
+            - node
+            - /app/dist/index.js
+            - gateway
+            - --bind
+            - lan
+            - --port
+            - "18789"
+          ports:
+            - name: gateway
+              containerPort: 18789
+              protocol: TCP
+          env:
+            - name: HOME
+              value: /home/node
+            - name: OPENCLAW_CONFIG_DIR
+              value: /home/node/.openclaw
+            - name: NODE_ENV
+              value: production
+            # Lets the plugin's kubectl-ate reach ateapi directly (no deployment lookup).
+            - name: ATE_ENDPOINT
+              value: "api.ate-system.svc.cluster.local:443"
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: gateway-token
+          envFrom:
+            - secretRef:
+                name: openclaw-api-keys
+                optional: true
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              # Headroom for the gateway node process + the kubectl-ate child it
+              # spawns for actor create/suspend. The gateway takes ~30-40s to open
+              # its HTTP listener under gVisor-neighbor CPU pressure, so probes use
+              # curl (cheap) rather than spawning a full node process each cycle.
+              memory: 640Mi
+              cpu: 600m
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "curl -sf -m 8 http://127.0.0.1:18789/healthz"]
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "curl -sf -m 8 http://127.0.0.1:18789/readyz"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 8
+            failureThreshold: 18
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node/.openclaw
+            - name: tmp-volume
+              mountPath: /tmp
+      volumes:
+        - name: openclaw-home
+          persistentVolumeClaim:
+            claimName: openclaw-gateway-pvc
+        - name: tmp-volume
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: openclaw-gateway-config
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-gateway-pvc
+  namespace: openclaw
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

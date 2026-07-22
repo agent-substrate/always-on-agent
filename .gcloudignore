@@ -1,0 +1,4 @@
+.git/
+docs/
+substrate-patches/
+**/node_modules/

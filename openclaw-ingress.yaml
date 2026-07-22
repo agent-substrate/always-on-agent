@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openclaw-gateway-ingress
+  namespace: openclaw
+  annotations:
+    kubernetes.io/ingress.class: gce
+    networking.gke.io/managed-certificates: openclaw-gateway-cert
+spec:
+  rules:
+    - host: openclaw.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openclaw-gateway
+                port:
+                  number: 18789
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: openclaw-gateway-cert
+  namespace: openclaw
+spec:
+  domains:
+    - openclaw.example.com

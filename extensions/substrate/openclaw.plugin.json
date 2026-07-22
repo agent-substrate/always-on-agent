@@ -1,0 +1,86 @@
+{
+  "id": "substrate",
+  "name": "Agent Substrate",
+  "description": "Split OpenClaw into an always-on gateway (presence) and a suspendable Substrate actor (cognition). Registers a 'substrate' ACP backend on the gateway and self-suspends the actor when idle.",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": false,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["role"],
+    "properties": {
+      "role": {
+        "type": "string",
+        "enum": ["gateway", "actor"],
+        "description": "Which half of the split this instance runs."
+      },
+      "atespace": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Gateway role: atespace the per-conversation actors are created in."
+      },
+      "template": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Gateway role: default golden ActorTemplate ('<namespace>/<name>') new conversation actors derive from."
+      },
+      "templateForAgent": {
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "description": "Gateway role: optional per-persona template override, keyed by resolved agentId."
+      },
+      "actorDomain": {
+        "type": "string",
+        "minLength": 1,
+        "default": "actors.resources.substrate.ate.dev",
+        "description": "Gateway role: DNS domain actors are addressed under (atenet Host routing)."
+      },
+      "actorToken": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Gateway role: bearer token for the actor's /v1/chat/completions API."
+      },
+      "provisioner": {
+        "type": "string",
+        "enum": ["ateapi", "kubectl-ate"],
+        "default": "ateapi",
+        "description": "Gateway role: how to create conversation actors. 'ateapi' = in-band gRPC (needs podcert mTLS); 'kubectl-ate' = shell out to kubectl-ate (for pods without a podcert)."
+      },
+      "kubectlAtePath": {
+        "type": "string",
+        "minLength": 1,
+        "default": "kubectl-ate",
+        "description": "Gateway role: path to the kubectl-ate binary when provisioner='kubectl-ate'."
+      },
+      "idleTimeoutSeconds": {
+        "type": "number",
+        "minimum": 5,
+        "default": 120,
+        "description": "Actor role: seconds of inactivity before the actor self-suspends."
+      },
+      "ateapiAddress": {
+        "type": "string",
+        "minLength": 1,
+        "default": "api.ate-system.svc.cluster.local:443",
+        "description": "Actor role: gRPC address of the Substrate ateapi control plane for SuspendActor."
+      }
+    }
+  },
+  "uiHints": {
+    "role": { "label": "Role", "help": "gateway = holds channels + routes turns; actor = runs the agent and self-suspends." },
+    "atespace": { "label": "Atespace", "help": "Atespace new conversation actors are created in (gateway role only)." },
+    "template": { "label": "Actor Template", "help": "Golden ActorTemplate '<namespace>/<name>' conversation actors derive from (gateway role only)." },
+    "actorDomain": { "label": "Actor Domain", "help": "DNS domain actors are addressed under (gateway role only)." },
+    "actorToken": { "label": "Actor Token", "help": "Auth token for the actor's HTTP API (gateway role only)." },
+    "idleTimeoutSeconds": { "label": "Idle Timeout (s)", "help": "How long the actor waits with no active work before suspending." },
+    "ateapiAddress": { "label": "ateapi Address", "help": "Substrate control-plane gRPC endpoint for SuspendActor." }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "bundledDefaultEnabled": false,
+      "paths": [{ "path": "actorToken", "expected": "string" }]
+    }
+  }
+}

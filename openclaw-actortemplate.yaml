@@ -1,0 +1,37 @@
+# ActorTemplate for the suspendable OpenClaw agent (Agent Substrate, current OSS
+# schema: ate.dev/v1alpha1). The controller boots a golden actor from this,
+# waits for the workload to warm up, then checkpoints it to snapshotsConfig.location.
+# Actors cloned from the golden restore-on-demand and self-suspend when idle.
+apiVersion: ate.dev/v1alpha1
+kind: ActorTemplate
+metadata:
+  name: openclaw-agent
+  namespace: openclaw
+spec:
+  pauseImage: "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
+  containers:
+    - name: agent
+      # The substrate-integrated OpenClaw image (base openclaw + extensions/substrate),
+      # MUST be @sha256-pinned (changing the image invalidates snapshots).
+      image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-actor@REPLACE_WITH_ACTOR_DIGEST
+      command: ["node", "/app/dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "80"]
+      env:
+        - { name: HOME, value: /home/node }
+        - { name: OPENCLAW_CONFIG_DIR, value: /home/node/.openclaw }
+        - { name: NODE_ENV, value: production }
+        # LLM provider key (Gemini here). Prefer a Secret in real deployments.
+        - { name: GEMINI_API_KEY, valueFrom: { secretKeyRef: { name: openclaw-api-keys, key: GEMINI_API_KEY } } }
+        # Shared bearer token: the gateway calls the actor's /v1/chat/completions
+        # with this token (gateway.auth.mode=token), so it must match the gateway's.
+        - { name: OPENCLAW_GATEWAY_TOKEN, valueFrom: { secretKeyRef: { name: openclaw-secrets, key: gateway-token } } }
+      # NOTE: no readyz probe — OpenClaw's /healthz reports "live" early (before
+      # plugin pre-warm), so we gate the golden checkpoint on a wall-clock warmup
+      # instead (atecontroller ATE_GOLDEN_WARMUP_SECONDS, ~120s) rather than readyz.
+      # atenet routes to actor port 80.
+  workerSelector:
+    matchLabels:
+      workload: openclaw
+  snapshotsConfig:
+    # Full = process memory + filesystem delta (needed to restore a live agent).
+    onPause: Full
+    location: gs://REPLACE_WITH_YOUR_BUCKET/openclaw/

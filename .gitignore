@@ -1,0 +1,29 @@
+# Dependencies & build output
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local state / secrets — never commit
+.openclaw/
+*.local
+*.env
+.env
+kubeconfig
+*.kubeconfig
+*-creds.json
+creds.json
+
+# Editor / OS
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Deck build artifacts
+pptx_build/

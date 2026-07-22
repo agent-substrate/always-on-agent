@@ -1,0 +1,52 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+// Subset of github.com/agent-substrate/substrate/pkg/proto/ateapipb needed by
+// this plugin. The package + service name MUST be `ateapi.Control` to match the
+// real server (the gRPC method path is /ateapi.Control/<Method>), and every
+// field number MUST match the server's ateapi.proto — protobuf is field-number
+// based, so a subset of fields is fine but the numbers must line up.
+package ateapi;
+
+service Control {
+  rpc GetActor(GetActorRequest) returns (Actor) {}
+  rpc CreateActor(CreateActorRequest) returns (Actor) {}
+  rpc SuspendActor(SuspendActorRequest) returns (SuspendActorResponse) {}
+  rpc DeleteActor(DeleteActorRequest) returns (Actor) {}
+}
+
+message ObjectRef {
+  string atespace = 1;
+  string name = 2;
+}
+
+// Subset of ResourceMetadata (only the caller-specified identity fields).
+message ResourceMetadata {
+  string atespace = 1;
+  string name = 2;
+}
+
+// Subset of Actor: identity + which ActorTemplate (golden) to derive from.
+message Actor {
+  ResourceMetadata metadata = 1;
+  string actor_template_namespace = 2;
+  string actor_template_name = 3;
+}
+
+message GetActorRequest { ObjectRef actor = 1; }
+message CreateActorRequest { Actor actor = 1; }
+message SuspendActorRequest { ObjectRef actor = 1; }
+message SuspendActorResponse { Actor actor = 1; }
+message DeleteActorRequest { ObjectRef actor = 1; }

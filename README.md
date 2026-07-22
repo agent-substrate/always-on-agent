@@ -7,7 +7,7 @@ from cognition**: an always-on gateway holds the channel connections, while the
 expensive agent runs as a suspendable Substrate actor that self-suspends when idle
 and auto-resumes on demand.
 
-See `docs/ARCHITECTURE.md` for the full design and tradeoffs.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and tradeoffs (with diagrams).
 
 ## Two ways to integrate
 
@@ -40,7 +40,7 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
 | `openclaw-gateway.yaml` | Always-on gateway Deployment + Service |
 | `openclaw-ingress.yaml` | External access for webhook-style channels |
 | `demo/` | WhatsApp demo config + deploy script + live dashboard |
-| `docs/` | Architecture doc + diagrams |
+| [`docs/`](docs/ARCHITECTURE.md) | Architecture doc + diagrams |
 
 ## Quick start (demo)
 

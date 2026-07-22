@@ -39,9 +39,10 @@ A full, honest comparison (including the one case where the alternative genuinel
 
 ## Architecture Diagram
 
-> Insert the image: `architecture-diagram.png` (in this folder). Boxes are
-> color-coded by ownership: **OpenClaw** (upstream), **Substrate** (upstream),
-> and **new — built by us**.
+![OpenClaw on Agent Substrate — full architecture](architecture-diagram.png)
+
+Boxes are color-coded by ownership: **OpenClaw** (upstream), **Substrate**
+(upstream), and **new — built by us**.
 
 ## Component Ownership — OpenClaw vs Substrate vs New
 
@@ -174,9 +175,17 @@ The most popular assistant channels — **WhatsApp, Discord, Slack (default), Si
 
 ### How each approach behaves
 
-**Approach A — Split (current).** See diagram `approach-split.png`. Channels of *both* families live in the always-on gateway; the agent actor suspends. This is uniform — the gateway holds persistent sockets and also receives inbound webhooks — and requires zero channel code changes. Always-on cost is just the lightweight gateway (and it can be made multi-tenant, amortizing per-user cost toward zero). Each wake reloads only the agent, not the channel stack.
+**Approach A — Split (current).**
 
-**Approach B — Monolithic + suspend-aware channels (rejected).** See diagram `approach-monolithic.png`. The whole instance is one suspendable actor, and the outcome splits by channel type:
+![Approach A — split: always-on gateway + suspendable agent actor](approach-split.png)
+
+Channels of *both* families live in the always-on gateway; the agent actor suspends. This is uniform — the gateway holds persistent sockets and also receives inbound webhooks — and requires zero channel code changes. Always-on cost is just the lightweight gateway (and it can be made multi-tenant, amortizing per-user cost toward zero). Each wake reloads only the agent, not the channel stack.
+
+**Approach B — Monolithic + suspend-aware channels (rejected).**
+
+![Approach B — monolithic: whole instance suspends, channels must be suspend-aware](approach-monolithic.png)
+
+The whole instance is one suspendable actor, and the outcome splits by channel type:
 
 - *Webhook channels:* the platform holds the connection and POSTs on each message; that POST can drive resume-on-demand, so the instance can suspend fully and reach **true zero idle cost** — a genuine edge over the split. The catch is that every wake cold-loads the *entire* stack (channels + agent), which is heavier than waking just the agent.
 - *Persistent-connection channels:* a suspended instance has a dead socket, so nothing ever learns a message arrived and nothing triggers resume. This forces one of three fallbacks, none better than the split: (1) keep the whole instance up — no savings; (2) add an always-on bridge to hold the sockets — which simply re-creates the gateway and then cold-wakes the full stack per message; or (3) poll on a CronJob — which wakes the full stack every cycle and adds latency. On top of that, it requires per-channel code changes (reconnect handling, webhook-URL rewriting), which is the sustainability problem we set out to avoid.

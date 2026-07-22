@@ -35,10 +35,8 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
 | Path | What |
 |------|------|
 | `extensions/substrate/` | The drop-in OpenClaw plugin (manifest, ACP backend, idle monitor) |
-| `openclaw-workerpool.yaml` | Substrate WorkerPool (gVisor worker pods) |
-| `openclaw-actortemplate.yaml` | Substrate ActorTemplate (agent actor spec) |
-| `openclaw-gateway.yaml` | Always-on gateway Deployment + Service |
-| `openclaw-ingress.yaml` | External access for webhook-style channels |
+| `manifests/` | Substrate + gateway K8s resources (WorkerPool, ActorTemplate, gateway, ingress) |
+| `build/` | Image build: gateway/actor Dockerfiles, Cloud Build configs, actor image inputs (`build/actor/`) |
 | `demo/` | WhatsApp demo config + deploy script + live dashboard |
 | [`docs/`](docs/ARCHITECTURE.md) | Architecture doc + diagrams |
 

@@ -115,7 +115,7 @@ spec:
               mountPath: /tmp
       containers:
         - name: gateway
-          # OpenClaw slim + compiled substrate plugin + kubectl-ate (built by gateway.Dockerfile).
+          # OpenClaw slim + compiled substrate plugin + kubectl-ate (built by build/gateway.Dockerfile).
           image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway@REPLACE_WITH_GATEWAY_DIGEST
           command:
             - node

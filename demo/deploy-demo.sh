@@ -66,10 +66,10 @@ image_exists() { gcloud container images describe "$1:$IMAGE_TAG" &>/dev/null; }
 if [ "$BUILD_IMAGES" = "true" ] || { [ "$BUILD_IMAGES" = "auto" ] && ! image_exists "$GATEWAY_IMAGE"; }; then
   echo "[1/8] Building images with Cloud Build (tag: $IMAGE_TAG)..."
   ( cd "$PARENT_DIR" && \
-    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" cloudbuild-gateway.yaml >/tmp/cb-gw.yaml && \
+    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-gateway.yaml >/tmp/cb-gw.yaml && \
     gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-gw.yaml . )
   ( cd "$PARENT_DIR" && \
-    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
+    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
     gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-actor.yaml . )
 else
   echo "[1/8] Skipping build (images present; set BUILD_IMAGES=true to force)."
@@ -105,8 +105,8 @@ kubectl -n "$NAMESPACE" create secret generic openclaw-api-keys \
 
 # --- [4/8] Substrate resources ---
 echo "[4/8] Applying WorkerPool + ActorTemplate..."
-render "$PARENT_DIR/openclaw-workerpool.yaml"   | kubectl apply -f -
-render "$PARENT_DIR/openclaw-actortemplate.yaml" | kubectl apply -f -
+render "$PARENT_DIR/manifests/workerpool.yaml"    | kubectl apply -f -
+render "$PARENT_DIR/manifests/actortemplate.yaml" | kubectl apply -f -
 
 # --- [5/8] Config maps ---
 echo "[5/8] Applying config maps..."
@@ -115,7 +115,7 @@ kubectl apply -f "$SCRIPT_DIR/openclaw-actor-config.yaml"
 
 # --- [6/8] Gateway ---
 echo "[6/8] Deploying gateway..."
-render "$PARENT_DIR/openclaw-gateway.yaml" | kubectl apply -f -
+render "$PARENT_DIR/manifests/gateway.yaml" | kubectl apply -f -
 kubectl -n "$NAMESPACE" rollout status deployment/openclaw-gateway --timeout=180s
 
 # --- [7/8] Golden + actor ---

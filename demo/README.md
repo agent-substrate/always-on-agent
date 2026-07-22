@@ -74,7 +74,7 @@ Build** (`gcr.io/$PROJECT_ID/openclaw-{gateway,actor}:demo`), pins them by diges
 ActorTemplate, gateway, and one demo actor. Force a rebuild with `BUILD_IMAGES=true`.
 
 > Building the images yourself needs OpenClaw's own build inputs referenced by
-> `../gateway.Dockerfile` and `../actor.Dockerfile`. If you already have images,
+> `../build/gateway.Dockerfile` and `../build/actor.Dockerfile`. If you already have images,
 > push them as `gcr.io/$PROJECT_ID/openclaw-gateway:demo` and
 > `...-actor:demo` and re-run — the script resolves their digests automatically.
 
@@ -120,9 +120,9 @@ kubectl delete namespace openclaw
 
 | File | Role |
 |------|------|
-| [`../openclaw-workerpool.yaml`](../openclaw-workerpool.yaml) | gVisor worker pods the actors run on |
-| [`../openclaw-actortemplate.yaml`](../openclaw-actortemplate.yaml) | golden agent template (image pinned by digest, snapshot to your bucket) |
-| [`../openclaw-gateway.yaml`](../openclaw-gateway.yaml) | always-on gateway Deployment + LoadBalancer + RBAC |
+| [`../manifests/workerpool.yaml`](../manifests/workerpool.yaml) | gVisor worker pods the actors run on |
+| [`../manifests/actortemplate.yaml`](../manifests/actortemplate.yaml) | golden agent template (image pinned by digest, snapshot to your bucket) |
+| [`../manifests/gateway.yaml`](../manifests/gateway.yaml) | always-on gateway Deployment + LoadBalancer + RBAC |
 | [`openclaw-demo-config.yaml`](openclaw-demo-config.yaml) | gateway `openclaw.json` (substrate plugin as **gateway**, WhatsApp binding) |
 | [`openclaw-actor-config.yaml`](openclaw-actor-config.yaml) | actor `openclaw.json` (substrate plugin as **actor**) + SOUL.md |
 | [`openclaw-demo-secrets.yaml`](openclaw-demo-secrets.yaml) | Secret template (the script creates these directly) |

@@ -68,9 +68,15 @@ if [ "$BUILD_IMAGES" = "true" ] || { [ "$BUILD_IMAGES" = "auto" ] && ! image_exi
   ( cd "$PARENT_DIR" && \
     sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-gateway.yaml >/tmp/cb-gw.yaml && \
     gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-gw.yaml . )
+  # The actor image is a thin overlay whose Dockerfile FROM references the project;
+  # substitute it into a temp Dockerfile (kept in the build context so Cloud Build can
+  # read it) and point the build config at it, then clean up.
+  ACTOR_DF="build/actor.Dockerfile.$IMAGE_TAG"
+  sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g" "$PARENT_DIR/build/actor.Dockerfile" >"$PARENT_DIR/$ACTOR_DF"
   ( cd "$PARENT_DIR" && \
-    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
+    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g; s|build/actor.Dockerfile\"|$ACTOR_DF\"|" build/cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
     gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-actor.yaml . )
+  rm -f "$PARENT_DIR/$ACTOR_DF"
 else
   echo "[1/8] Skipping build (images present; set BUILD_IMAGES=true to force)."
 fi

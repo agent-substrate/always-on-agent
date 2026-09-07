@@ -39,12 +39,15 @@ export function createKubectlAteClient(cfg: { binPath?: string; endpoint?: strin
   };
 
   return {
-    async createActor(ref: ActorRef, templateNamespace: string, templateName: string) {
+    async createActor(ref: ActorRef, _templateNamespace: string, templateName: string) {
       try {
         await run([
           "create", "actor", ref.name,
           "-a", ref.atespace,
-          "--template", `${templateNamespace}/${templateName}`,
+          // `--template <ns>/<name>` is gone. ActorTemplate stopped being a
+          // Kubernetes CRD, so there is no namespace to qualify it with:
+          // --template-ref resolves the name inside the actor's own atespace.
+          "--template-ref", templateName,
         ]);
       } catch (err) {
         const msg = String((err as { stderr?: string })?.stderr ?? (err as Error)?.message ?? err);

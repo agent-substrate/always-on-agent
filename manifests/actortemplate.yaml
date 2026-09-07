@@ -1,37 +1,92 @@
-# ActorTemplate for the suspendable OpenClaw agent (Agent Substrate, current OSS
-# schema: ate.dev/v1alpha1). The controller boots a golden actor from this,
-# waits for the workload to warm up, then checkpoints it to snapshotsConfig.location.
-# Actors cloned from the golden restore-on-demand and self-suspend when idle.
-apiVersion: ate.dev/v1alpha1
-kind: ActorTemplate
+# ActorTemplate for the suspendable OpenClaw agent.
+#
+# NOTE (schema change): ActorTemplate is no longer a Kubernetes CRD. Upstream
+# moved it to a substrate-native resource (ateapipb.ActorTemplate), so this file
+# is a *protojson-shaped* document with no apiVersion/kind/namespace, and it is
+# created through the ate API:
+#
+#     kubectl ate create atespace openclaw
+#     kubectl ate create actor-template -f manifests/actortemplate.yaml
+#
+# `kubectl apply -f` no longer works — the actortemplates.ate.dev CRD is gone.
+# Templates are also immutable now: there is no update, so deploy-demo.sh deletes
+# and recreates to change one.
+#
+# The controller boots a golden actor from this, waits for the workload to warm
+# up, then checkpoints it to snapshotsConfig.storageLocation. Actors cloned from
+# the golden restore on demand.
 metadata:
+  # The atespace replaces the old metadata.namespace, and it must already exist.
+  # It has to be the SAME atespace the actors live in: `kubectl ate create actor
+  # --template-ref` resolves the template in the actor's atespace, so a template
+  # parked in the k8s namespace instead is simply not found.
+  atespace: openclaw-demo
   name: openclaw-agent
-  namespace: openclaw
-spec:
-  pauseImage: "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
-  containers:
-    - name: agent
-      # The substrate-integrated OpenClaw image (base openclaw + extensions/substrate),
-      # MUST be @sha256-pinned (changing the image invalidates snapshots).
-      image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-actor@REPLACE_WITH_ACTOR_DIGEST
-      command: ["node", "/app/dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "80"]
-      env:
-        - { name: HOME, value: /home/node }
-        - { name: OPENCLAW_CONFIG_DIR, value: /home/node/.openclaw }
-        - { name: NODE_ENV, value: production }
-        # LLM provider key (Gemini here). Prefer a Secret in real deployments.
-        - { name: GEMINI_API_KEY, valueFrom: { secretKeyRef: { name: openclaw-api-keys, key: GEMINI_API_KEY } } }
-        # Shared bearer token: the gateway calls the actor's /v1/chat/completions
-        # with this token (gateway.auth.mode=token), so it must match the gateway's.
-        - { name: OPENCLAW_GATEWAY_TOKEN, valueFrom: { secretKeyRef: { name: openclaw-secrets, key: gateway-token } } }
-      # NOTE: no readyz probe — OpenClaw's /healthz reports "live" early (before
-      # plugin pre-warm), so we gate the golden checkpoint on a wall-clock warmup
-      # instead (atecontroller ATE_GOLDEN_WARMUP_SECONDS, ~120s) rather than readyz.
-      # atenet routes to actor port 80.
-  workerSelector:
-    matchLabels:
-      workload: openclaw
-  snapshotsConfig:
-    # Full = process memory + filesystem delta (needed to restore a live agent).
-    onPause: Full
-    location: gs://REPLACE_WITH_YOUR_BUCKET/openclaw/
+workerSelector:
+  matchLabels:
+    workload: openclaw
+containers:
+  - name: agent
+    # The substrate-integrated OpenClaw image (base openclaw + extensions/substrate),
+    # MUST be @sha256-pinned (changing the image invalidates snapshots).
+    image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-actor@REPLACE_WITH_ACTOR_DIGEST
+    # Entrypoint of the public OpenClaw image (WORKDIR /app). The older private
+    # base bundled the CLI at /app/dist/index.js instead.
+    command: ["node", "/app/openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "80"]
+    env:
+      - { name: HOME, value: /home/node }
+      - { name: OPENCLAW_CONFIG_DIR, value: /home/node/.openclaw }
+      - { name: NODE_ENV, value: production }
+      # Substrate removed valueFrom/secretKeyRef from ActorTemplate env in #835
+      # — actors are meant to get no direct access to Secrets, with credentials
+      # injected on the egress route instead. That egress injection tier does
+      # not exist yet, so both values below are literals substituted by
+      # deploy-demo.sh at create time (same approach as Substrate's own
+      # hack/install-demo-claude-code-multiplex.sh). Never commit the rendered
+      # manifest: the key lands in the template and in the golden snapshot.
+      - { name: GEMINI_API_KEY, value: "REPLACE_WITH_GEMINI_API_KEY" }
+      # Shared bearer token: the gateway calls the actor's /v1/chat/completions
+      # with this token (gateway.auth.mode=token), so it must match the gateway's.
+      - { name: OPENCLAW_GATEWAY_TOKEN, value: "REPLACE_WITH_GATEWAY_TOKEN" }
+    volumeMounts:
+      - name: system-info
+        mountPath: /run/ate
+    # NOTE: no readyz probe — OpenClaw's /healthz reports "live" early (before
+    # plugin pre-warm), so the golden checkpoint is gated on atecontroller's
+    # wall-clock warmup instead. That warmup is a hardcoded 20s on Substrate main
+    # (goldenSnapshotWarmup); declaring a readyz probe on every container would
+    # drop it to 0. 20s has been sufficient in testing.
+    # atenet routes to actor port 80.
+volumes:
+  # The actor's own identity, projected as files. This is NOT automatic — without
+  # this volume /run/ate/actor-id simply does not exist. Nothing in the demo path
+  # depends on it (the gateway drives suspend and already knows each actor's
+  # name), but it is what an in-sandbox workload would read to learn who it is,
+  # and it makes `kubectl ate logs` output easy to correlate. The projection is
+  # fixed for the actor's lifetime across suspend/resume/migration.
+  - name: system-info
+    systemInfo:
+      dataSources:
+        - actorMetadata:
+            items:
+              - field: ACTOR_METADATA_FIELD_NAME
+                path: actor-id
+              - field: ACTOR_METADATA_FIELD_ATESPACE
+                path: atespace
+              - field: ACTOR_METADATA_FIELD_UID
+                path: actor-uid
+snapshotsConfig:
+  # FULL = process memory + root filesystem changes + durable data (needed to
+  # restore a live agent). Upstream #1379 added DATA scope, which captures only
+  # durable data and resumes via onResume.fromData; the demo stays on FULL
+  # because the whole point is restoring a warm, already-thinking agent.
+  onPause: SNAPSHOT_CONTENT_SCOPE_FULL
+  onCommit: SNAPSHOT_CONTENT_SCOPE_FULL
+  onResume:
+    fromData: RESUME_SOURCE_GOLDEN
+  storageLocation: gs://REPLACE_WITH_YOUR_BUCKET/openclaw/
+sandboxConfig:
+  sandboxClass: SANDBOX_CLASS_GVISOR
+  # Names the cluster-scoped SandboxConfig that pins the runsc binary; the stock
+  # install ships one called gvisor-default.
+  configName: gvisor-default

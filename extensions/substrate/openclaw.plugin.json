@@ -24,7 +24,7 @@
       "template": {
         "type": "string",
         "minLength": 1,
-        "description": "Gateway role: default golden ActorTemplate ('<namespace>/<name>') new conversation actors derive from."
+        "description": "Gateway role: default golden ActorTemplate new conversation actors derive from, by bare name (it resolves in the same atespace)."
       },
       "templateForAgent": {
         "type": "object",
@@ -71,7 +71,7 @@
   "uiHints": {
     "role": { "label": "Role", "help": "gateway = holds channels + routes turns; actor = runs the agent and self-suspends." },
     "atespace": { "label": "Atespace", "help": "Atespace new conversation actors are created in (gateway role only)." },
-    "template": { "label": "Actor Template", "help": "Golden ActorTemplate '<namespace>/<name>' conversation actors derive from (gateway role only)." },
+    "template": { "label": "Actor Template", "help": "Golden ActorTemplate conversation actors derive from, by bare name (gateway role only)." },
     "actorDomain": { "label": "Actor Domain", "help": "DNS domain actors are addressed under (gateway role only)." },
     "actorToken": { "label": "Actor Token", "help": "Auth token for the actor's HTTP API (gateway role only)." },
     "idleTimeoutSeconds": { "label": "Idle Timeout (s)", "help": "How long the actor waits with no active work before suspending." },

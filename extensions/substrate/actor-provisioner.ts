@@ -66,10 +66,15 @@ export function createActorProvisioner(cfg: {
   };
 }
 
+// ActorTemplate is no longer a Kubernetes CRD, so a template has no namespace to
+// qualify it with: it is resolved by bare name inside the actor's own atespace.
+// `<namespace>/<name>` is still accepted for configs written against the old
+// shape, and the namespace is discarded.
 function splitTemplate(template: string): [namespace: string, name: string] {
   const i = template.indexOf("/");
-  if (i <= 0 || i === template.length - 1) {
-    throw new Error(`substrate: template must be "<namespace>/<name>", got "${template}"`);
+  if (i < 0) return ["", template];
+  if (i === 0 || i === template.length - 1) {
+    throw new Error(`substrate: template must be "<name>", got "${template}"`);
   }
   return [template.slice(0, i), template.slice(i + 1)];
 }

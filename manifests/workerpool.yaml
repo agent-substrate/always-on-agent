@@ -1,7 +1,11 @@
 # WorkerPool for the OpenClaw agent actors (Agent Substrate, current OSS schema:
-# ate.dev/v1alpha1). Worker pods run the gVisor ateom (ateomImage). The runsc
+# ate.dev/v1alpha1). Worker pods run the gVisor ateom (workerImage). The runsc
 # binary is NOT pinned here — it comes from the cluster's gVisor SandboxConfig
 # (see NOTE below). The ActorTemplate's workerSelector matches this pool's label.
+#
+# WorkerPool is still a Kubernetes CRD and is applied with `kubectl apply`. The
+# ActorTemplate next to it is NOT — it became a substrate-native resource and is
+# created through the ate API. See manifests/actortemplate.yaml.
 apiVersion: ate.dev/v1alpha1
 kind: WorkerPool
 metadata:
@@ -11,8 +15,15 @@ metadata:
     workload: openclaw
 spec:
   replicas: 2
-  # ko-resolved at deploy time (ko apply / ko resolve). Pin to a digest for prod.
-  ateomImage: ko://github.com/agent-substrate/substrate/cmd/ateom-gvisor
+  # Substituted by deploy-demo.sh, which builds cmd/ateom-gvisor out of your
+  # Substrate checkout with ko. It MUST come from the same commit you installed
+  # the control plane from: ateom talks to atelet/ateapi over internal protos, and
+  # a mismatched build fails golden resume with an opaque error (we hit
+  # "atunnel: actor version must be positive"). Do not hardcode a ko:// reference
+  # here — plain `kubectl apply` does not resolve it, and the worker pods land in
+  # InvalidImageName.
+  # Renamed from `ateomImage` upstream; `ateomImage` is now rejected.
+  workerImage: REPLACE_WITH_ATEOM_IMAGE
   sandboxClass: gvisor
   # Optional: pin workers to a node pool and size them.
   # template:
@@ -23,6 +34,7 @@ spec:
   #           requests: { memory: 512Mi, cpu: 250m }
   #           limits:   { memory: 2Gi,   cpu: "1" }
 # NOTE (gVisor runsc): the cluster-default gvisor SandboxConfig pins the runsc
-# binary. Public gvisor.dev releases crash a heavy multi-process Node.js actor
-# (OpenClaw) mid-init; use the GKE-Sandbox runsc build. See
-# manifests/ate-install/sandboxconfig-gvisor.yaml in agent-substrate/substrate.
+# binary — see manifests/ate-install/sandboxconfig-gvisor.yaml in
+# agent-substrate/substrate. No override is needed: OpenClaw checkpoints and
+# restores fine on the stock public gvisor.dev releases that config ships
+# (verified on 20260622 and 20260803).

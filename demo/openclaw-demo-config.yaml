@@ -15,7 +15,7 @@ data:
               "role": "gateway",
               "atespace": "openclaw-demo",
               "idleTimeoutSeconds": 10,
-              "template": "openclaw/openclaw-agent",
+              "template": "openclaw-agent",
               "actorDomain": "actors.resources.substrate.ate.dev",
               "actorToken": "${OPENCLAW_GATEWAY_TOKEN}",
               "provisioner": "kubectl-ate",
@@ -32,10 +32,7 @@ data:
       "agents": {
         "defaults": { "model": "google/gemini-3-flash-preview" }
       },
-      "cron": {
-        "enabled": true,
-        "store": "/home/node/.openclaw/cron/jobs.json"
-      },
+      "cron": { "enabled": true },
       "bindings": [
         {
           "type": "acp",
@@ -54,10 +51,9 @@ data:
         "bind": "lan",
         "controlUi": {
           "enabled": true,
-          "allowedOrigins": ["http://localhost:18789"],
-          "allowInsecureAuth": true,
-          "dangerouslyDisableDeviceAuth": true
+          "allowedOrigins": ["http://localhost:18789"]
         },
+        "http": { "endpoints": { "chatCompletions": { "enabled": true } } },
         "auth": { "mode": "token" }
       },
       "channels": {

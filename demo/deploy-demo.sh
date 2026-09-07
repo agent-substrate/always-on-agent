@@ -15,11 +15,12 @@ GCS_BUCKET="${GCS_BUCKET:-}"                        # required: bucket for golde
 GEMINI_API_KEY="${GEMINI_API_KEY:-}"               # required: LLM provider key (prompted if unset)
 IMAGE_TAG="${IMAGE_TAG:-demo}"                      # tag the images are built/pushed under
 BUILD_IMAGES="${BUILD_IMAGES:-auto}"               # auto | true | false
-SUBSTRATE_REPO="${SUBSTRATE_REPO:-}"               # optional: path to a substrate clone to auto-install
+SUBSTRATE_REPO="${SUBSTRATE_REPO:-}"               # path to your substrate clone (needed to build ateom)
+ATEOM_IMAGE="${ATEOM_IMAGE:-}"                     # optional: prebuilt ateom-gvisor image; else built from SUBSTRATE_REPO
 NAMESPACE="openclaw"
 ATESPACE="openclaw-demo"
 ACTOR_NAME="oc-agent"
-TEMPLATE="openclaw-agent"                           # ActorTemplate name (namespace/name = openclaw/openclaw-agent)
+TEMPLATE="openclaw-agent"                           # ActorTemplate name; lives in ATESPACE, not in a k8s namespace
 GATEWAY_IMAGE="gcr.io/${PROJECT_ID}/openclaw-gateway"
 ACTOR_IMAGE="gcr.io/${PROJECT_ID}/openclaw-actor"
 
@@ -49,7 +50,7 @@ if ! kubectl get namespace ate-system &>/dev/null; then
 fi
 kubectl -n ate-system get deployment ate-api-server &>/dev/null \
   || die "ate-api-server not found in ate-system — Substrate may be partially installed."
-if ! command -v kubectl-ate &>/dev/null && ! kubectl ate version &>/dev/null 2>&1; then
+if ! command -v kubectl-ate &>/dev/null && ! kubectl ate --version &>/dev/null 2>&1; then
   die "kubectl-ate CLI not found. Build it from the Substrate repo (make build-atectl) and put bin/kubectl-ate on your PATH."
 fi
 gcloud storage ls "gs://${GCS_BUCKET}" &>/dev/null \
@@ -68,15 +69,11 @@ if [ "$BUILD_IMAGES" = "true" ] || { [ "$BUILD_IMAGES" = "auto" ] && ! image_exi
   ( cd "$PARENT_DIR" && \
     sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-gateway.yaml >/tmp/cb-gw.yaml && \
     gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-gw.yaml . )
-  # The actor image is a thin overlay whose Dockerfile FROM references the project;
-  # substitute it into a temp Dockerfile (kept in the build context so Cloud Build can
-  # read it) and point the build config at it, then clean up.
-  ACTOR_DF="build/actor.Dockerfile.$IMAGE_TAG"
-  sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g" "$PARENT_DIR/build/actor.Dockerfile" >"$PARENT_DIR/$ACTOR_DF"
+  # The actor image builds FROM the public OpenClaw release, so only the output
+  # tag needs substituting, so no temp Dockerfile.
   ( cd "$PARENT_DIR" && \
-    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g; s|build/actor.Dockerfile\"|$ACTOR_DF\"|" build/cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
+    sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
     gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-actor.yaml . )
-  rm -f "$PARENT_DIR/$ACTOR_DF"
 else
   echo "[1/8] Skipping build (images present; set BUILD_IMAGES=true to force)."
 fi
@@ -93,12 +90,28 @@ ACTOR_DIGEST="$(digest_of "$ACTOR_IMAGE")"
 echo "    gateway @ ${GATEWAY_DIGEST}"
 echo "    actor   @ ${ACTOR_DIGEST}"
 
+# The worker pods' ateom must be built from the SAME Substrate commit the control
+# plane was installed from. ateom speaks internal protos to atelet/ateapi, and a
+# skewed build fails golden resume with an opaque error rather than a version
+# message. Building it here from your checkout is what keeps the two in step.
+if [ -z "$ATEOM_IMAGE" ]; then
+  [ -n "$SUBSTRATE_REPO" ] || die "Set SUBSTRATE_REPO=/path/to/substrate (the clone you installed Substrate from) so ateom can be built to match, or set ATEOM_IMAGE to a prebuilt image from that same commit."
+  need ko
+  echo "    Building ateom-gvisor from $SUBSTRATE_REPO ($(git -C "$SUBSTRATE_REPO" rev-parse --short HEAD 2>/dev/null || echo unknown))..."
+  ATEOM_IMAGE="$(cd "$SUBSTRATE_REPO" && KO_DOCKER_REPO="gcr.io/${PROJECT_ID}/ate-images" ko build --bare=false --platform=linux/amd64 ./cmd/ateom-gvisor)" \
+    || die "ko build of ./cmd/ateom-gvisor failed in $SUBSTRATE_REPO."
+fi
+echo "    ateom   = ${ATEOM_IMAGE}"
+
 # render: substitute project, bucket, and digests into a manifest, print to stdout.
 render() {
   sed -e "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g" \
       -e "s|REPLACE_WITH_YOUR_BUCKET|$GCS_BUCKET|g" \
       -e "s|REPLACE_WITH_GATEWAY_DIGEST|$GATEWAY_DIGEST|g" \
-      -e "s|REPLACE_WITH_ACTOR_DIGEST|$ACTOR_DIGEST|g" "$1"
+      -e "s|REPLACE_WITH_ACTOR_DIGEST|$ACTOR_DIGEST|g" \
+      -e "s|REPLACE_WITH_GEMINI_API_KEY|$GEMINI_API_KEY|g" \
+      -e "s|REPLACE_WITH_GATEWAY_TOKEN|$GATEWAY_TOKEN|g" \
+      -e "s|REPLACE_WITH_ATEOM_IMAGE|$ATEOM_IMAGE|g" "$1"
 }
 
 # --- [3/8] Namespace + secrets ---
@@ -111,13 +124,28 @@ kubectl -n "$NAMESPACE" create secret generic openclaw-api-keys \
 
 # --- [4/8] Substrate resources ---
 echo "[4/8] Applying WorkerPool + ActorTemplate..."
+# WorkerPool is still a Kubernetes CRD.
 render "$PARENT_DIR/manifests/workerpool.yaml"    | kubectl apply -f -
-render "$PARENT_DIR/manifests/actortemplate.yaml" | kubectl apply -f -
+
+# ActorTemplate is NOT: upstream moved it out of the CRD API into a
+# substrate-native resource, so it goes through the ate API instead of
+# `kubectl apply`, and its atespace must exist first. Templates are immutable
+# (there is no update verb), so a re-run that changes the image, bucket or key
+# has to delete and recreate.
+kubectl ate create atespace "$ATESPACE" 2>/dev/null || echo "    atespace $ATESPACE exists, continuing..."
+if kubectl ate get actor-template "$TEMPLATE" -a "$ATESPACE" &>/dev/null; then
+  echo "    Replacing existing actor template (templates are immutable)..."
+  kubectl ate delete actor-template "$TEMPLATE" -a "$ATESPACE"
+fi
+render "$PARENT_DIR/manifests/actortemplate.yaml" | kubectl ate create actor-template -f -
 
 # --- [5/8] Config maps ---
 echo "[5/8] Applying config maps..."
+# Gateway only. The actor's openclaw.json is baked into its image (build/actor/).
+# ActorTemplate volumes did grow an `image` source (an @-pinned OCI image mounted
+# read-only), so staging files without rebuilding the actor image is now possible,
+# but there is still no ConfigMap volume source.
 kubectl apply -f "$SCRIPT_DIR/openclaw-demo-config.yaml"
-kubectl apply -f "$SCRIPT_DIR/openclaw-actor-config.yaml"
 
 # --- [6/8] Gateway ---
 echo "[6/8] Deploying gateway..."
@@ -126,11 +154,26 @@ kubectl -n "$NAMESPACE" rollout status deployment/openclaw-gateway --timeout=180
 
 # --- [7/8] Golden + actor ---
 echo "[7/8] Waiting for golden snapshot, then creating the demo actor..."
-kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Ready \
-  actortemplate.ate.dev/"$TEMPLATE" --timeout=420s 2>/dev/null \
-  || echo "    (golden not Ready yet — the actor will resume once it is)"
-kubectl ate create atespace "$ATESPACE" 2>/dev/null || echo "    atespace exists, continuing..."
-kubectl ate create actor "$ACTOR_NAME" --template "$NAMESPACE/$TEMPLATE" --atespace "$ATESPACE" 2>/dev/null \
+# `kubectl wait --for=...` only understands Kubernetes objects, and ActorTemplate
+# is no longer one, so poll the substrate resource instead. Fail fast if the
+# template reconciler reports an error rather than sitting out the whole timeout.
+golden_ready() {
+  local deadline=$((SECONDS + 420)) json snapshot err
+  while ((SECONDS < deadline)); do
+    if json=$(kubectl ate get actor-template "$TEMPLATE" -a "$ATESPACE" -o json 2>/dev/null); then
+      snapshot=$(jq -r '.actorTemplates[0].status.goldenSnapshotStatus.goldenSnapshot.name // empty' <<<"$json")
+      [ -n "$snapshot" ] && { echo "    golden snapshot ready: $snapshot"; return 0; }
+      err=$(jq -r '.actorTemplates[0].status.goldenSnapshotStatus.errorMessage // empty' <<<"$json")
+      [ -n "$err" ] && { echo "    golden snapshot FAILED: $err" >&2; return 1; }
+    fi
+    sleep 5
+  done
+  echo "    timed out waiting for the golden snapshot" >&2
+  return 1
+}
+golden_ready || echo "    (continuing anyway, the actor will resume once the golden is ready)"
+# The template is resolved in the actor's atespace, so both live in $ATESPACE.
+kubectl ate create actor "$ACTOR_NAME" --template-ref "$TEMPLATE" --atespace "$ATESPACE" 2>/dev/null \
   || echo "    actor exists, continuing..."
 
 # --- [7b] Optional cron status pings (run on the always-on gateway agent) ---
@@ -138,7 +181,7 @@ WHATSAPP_PEER="${WHATSAPP_PEER:-}"
 if [ -n "$WHATSAPP_PEER" ]; then
   echo "    Creating cron status pings to $WHATSAPP_PEER ..."
   GW_POD=$(kubectl -n "$NAMESPACE" get pod -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}')
-  ocaw() { kubectl -n "$NAMESPACE" exec "$GW_POD" -c gateway -- node /app/dist/index.js "$@"; }
+  ocaw() { kubectl -n "$NAMESPACE" exec "$GW_POD" -c gateway -- node /app/openclaw.mjs "$@"; }
   ocaw cron add --name status-30m --every 30m --agent main \
     --model google/gemini-3-flash-preview --light-context \
     --channel whatsapp --to "$WHATSAPP_PEER" \

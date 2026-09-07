@@ -204,7 +204,7 @@ That is why we chose the split.
 
 **Actor**: plain, unmodified OpenClaw — no channels, no substrate config; it just serves `/v1/chat/completions`. It needs no control-plane credentials because the gateway drives create/resume/suspend on its behalf.
 
-## Deployment (GKE, project REPLACE_WITH_YOUR_PROJECT, cluster substrate-demo-mymaya)
+## Deployment (GKE)
 
 Targets **current OSS Substrate** (`agent-substrate/substrate`, CRD group `ate.dev`).
 
@@ -216,7 +216,7 @@ Targets **current OSS Substrate** (`agent-substrate/substrate`, CRD group `ate.d
 - `WorkerPool` (`ate.dev/v1alpha1`, gVisor `SandboxClass`) + `ActorTemplate`
   (golden snapshot to GCS). runsc comes from the cluster gVisor `SandboxConfig`.
 - Actors use the **atespace** model: `kubectl ate create atespace <a>` then
-  `kubectl ate create actor <n> -a <a> --template openclaw/openclaw-agent`, and are
+  `kubectl ate create actor <n> -a <a> --template-ref openclaw-agent`, and are
   addressed at `<actor>.<atespace>.actors.resources.substrate.ate.dev` (atenet routes
   restore-on-demand to worker port 80).
 - Real-time dashboard: lists live actors (via `kubectl-ate` per atespace), the

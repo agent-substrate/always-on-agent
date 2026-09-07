@@ -42,7 +42,10 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
 
 ## Quick start (demo)
 
-1. Install Substrate on a GKE cluster (`hack/install-ate.sh --deploy-ate-system`).
+1. Install Substrate on a GKE cluster with the packaged installer at
+   [`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke)
+   (`make run`), or from a Substrate checkout with
+   `hack/install-ate.sh --deploy-ate-system`.
 2. `export PROJECT_ID=… GCS_BUCKET=… GEMINI_API_KEY=…`
 3. `cd demo && ./deploy-demo.sh` — builds the images, pins them by digest, deploys
    the WorkerPool, ActorTemplate, and gateway, then prints next steps (link
@@ -60,7 +63,7 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
   (`ate.dev/v1alpha1`), point the gVisor `SandboxConfig` at a runsc build that
   survives a heavy multi-process Node.js actor, and apply the control-plane
   changes below. Actors use the **atespace** model
-  (`kubectl ate create atespace <a>; kubectl ate create actor <n> -a <a> --template <ns>/<name>`)
+  (`kubectl ate create atespace <a>; kubectl ate create actor <n> -a <a> --template-ref <name>`)
   and are reached at `<actor>.<atespace>.actors.resources.substrate.ate.dev`.
 
 ### Substrate control-plane changes needed (verified working, submittable upstream)

@@ -1,29 +1,54 @@
-# Substrate control-plane changes (upstreamed)
+# Substrate control-plane changes
 
 Running a heavy, suspend/resume agent end-to-end surfaced a few gaps in
 **[`agent-substrate/substrate`](https://github.com/agent-substrate/substrate)**
-(the OSS control plane, CRD group `ate.dev`). Rather than carry local patches
-here — which bitrot — the fixes are upstreamed:
+(the OSS control plane). Rather than carry local patches here, which bitrot,
+findings go upstream as issues and PRs. This file records what came out of this
+integration and where it landed.
 
-- **PR [agent-substrate/substrate#487](https://github.com/agent-substrate/substrate/pull/487)** —
-  makes the long-running timeouts / golden warmup configurable and gates a runsc
-  flag, all **defaults unchanged** (purely additive).
-- **Issue [agent-substrate/substrate#465](https://github.com/agent-substrate/substrate/issues/465)** —
-  the underlying suspend-safe-networking work that will remove most of the need
-  to tune these knobs.
+## Upstreamed
 
-## What changed and why
+- **PR [#487](https://github.com/agent-substrate/substrate/pull/487)** (merged):
+  makes the readiness deadline a per-container setting instead of a hardcoded
+  30s. `readyz.Wait` polls the container until it returns 200 or the deadline
+  expires, and losing that race fails the actor start; how long a workload takes
+  to bind its HTTP server is a property of that workload, not of the cluster.
+  On current main this is `ContainerReadyz.timeout_seconds` (1–3600, `0` means
+  the server default of 30s), alongside `http_get`.
 
-| Component | Change | Why |
-|---|---|---|
-| `atecontroller` golden flow | golden warmup env-configurable (`ATE_GOLDEN_WARMUP_SECONDS`, default 20s unchanged) | the 20s default can checkpoint a slow-initializing, probe-less workload before it finishes warming up, capturing a dead golden |
-| `atenet` route / ext_proc timeouts | env-configurable (`ATE_ROUTE_TIMEOUT_SECONDS`, `ATE_EXTPROC_TIMEOUT_SECONDS`; defaults unchanged) | long LLM turns and a cold restore-on-demand of a large snapshot can exceed the steady-state defaults |
-| `atenet` background resume timeout | env-configurable (`ATE_RESUME_TIMEOUT_SECONDS`; default unchanged) | a ~60 MiB cold restore exceeded the old ceiling; cancelling the in-flight restore surfaced as a 504 |
-| `ateom-gvisor` `runsc.go` | gate `-allow-connected-on-save` behind `ATEOM_RUNSC_ALLOW_CONNECTED_ON_SAVE` (default on) | some runsc builds reject the flag (`flag provided but not defined`) on `runsc start`; this lets them opt out without a code change |
+  This PR was rescoped during review. It originally proposed a tunable
+  wall-clock warmup before the golden checkpoint; that was rejected on the
+  grounds that the answer for a workload which cannot report readiness is a
+  readiness endpoint, or a sidecar that provides one, rather than a longer
+  timer. Only the readyz deadline survived.
 
-**Not upstreamed (intentionally, environment-specific):** the gVisor
-`SandboxConfig` `runsc.url` pin. The generic, portable finding is only that a
-runsc build which survives a heavy multi-process Node.js actor is required — the
-public gvisor.dev releases crash its sentry ~30–60s in.
+- **Issue [#465](https://github.com/agent-substrate/substrate/issues/465)** (open)
+  covers suspend-safe actor networking via injected in-sandbox ingress/egress
+  proxies. The underlying work that removes most of the need to tune timeouts
+  at all.
 
-See PR #487 for the exact diffs, rationale, and verification.
+## Findings that did not become patches
+
+The demo does not declare a readyz probe. OpenClaw's `/healthz` reports "live"
+early, before plugin pre-warm, so gating the golden checkpoint on it would
+capture a half-warmed agent. The golden is instead gated on atecontroller's
+wall-clock warmup, which has been sufficient in testing. A real readiness
+endpoint on the actor would be the better fix and would let `timeout_seconds`
+above do its job. See the note in
+[`../manifests/actortemplate.yaml`](../manifests/actortemplate.yaml).
+
+## Corrections to earlier revisions of this file
+
+Two claims that appeared here previously were wrong and are recorded so they do
+not get repeated:
+
+- This file used to describe PR #487 as landing four environment-variable knobs
+  (`ATE_GOLDEN_WARMUP_SECONDS`, `ATE_ROUTE_TIMEOUT_SECONDS`,
+  `ATE_EXTPROC_TIMEOUT_SECONDS`, `ATE_RESUME_TIMEOUT_SECONDS`) plus a runsc flag
+  gate (`ATEOM_RUNSC_ALLOW_CONNECTED_ON_SAVE`). None of those exist upstream;
+  they were from the pre-rescope revision of the branch and never merged.
+- It also claimed the public `gvisor.dev` releases "crash the sentry ~30–60s in"
+  on this workload, and that a pinned `runsc.url` was therefore required. That
+  is not true on current builds: the actor checkpoints and restores fine on the
+  stock releases the default gVisor `SandboxConfig` ships (verified on the
+  20260622, 20260803 and 20260824 builds). No `runsc.url` pin is needed.

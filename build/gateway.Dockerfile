@@ -10,9 +10,23 @@
 # has no podcert for in-band ateapi mTLS.
 
 # --- build kubectl-ate from the pinned Substrate OSS repo ---
-FROM golang:1.26-bookworm AS ate
-RUN git clone --depth=1 https://github.com/agent-substrate/substrate.git /src \
- && cd /src && CGO_ENABLED=0 go build -o /out/kubectl-ate ./cmd/kubectl-ate
+#
+# Pinned to a commit, not to main. kubectl-ate talks to ateapi over gRPC, so a
+# floating clone lets the client drift away from the control plane the demo is
+# pinned to, and the failures are opaque: an image built before the CLI learned
+# to mint a bearer token fails every call with `Unauthenticated: missing bearer
+# token`, and one built before ActorTemplate stopped being a CRD still passes the
+# removed `--template <ns>/<name>` flag. Bump this with the pin in demo/README.md.
+# Track go.mod's `go` directive in the Substrate repo, not just whatever builds
+# today: the toolchain is not auto-downloadable in this build environment, so a
+# repo bump to a newer Go fails the build outright.
+FROM golang:1.27-bookworm AS ate
+# Head of the `release-0.1` branch, pinned by SHA rather than by branch name:
+# release-0.1 was cut clean off main and still moves as fixes are picked into it.
+ARG SUBSTRATE_REF=c48b3a3c
+RUN git clone --filter=blob:none https://github.com/agent-substrate/substrate.git /src \
+ && cd /src && git checkout "$SUBSTRATE_REF" \
+ && CGO_ENABLED=0 go build -o /out/kubectl-ate ./cmd/kubectl-ate
 
 # --- compile the plugin (ts -> dist/*.js) + vendor runtime deps ---
 FROM node:24-bookworm AS plugin
@@ -28,7 +42,14 @@ RUN npm install --omit=dev \
  && cp ateapi.proto dist/ateapi.proto
 
 # --- gateway image ---
-FROM ghcr.io/openclaw/openclaw:slim
+# Pinned by digest, and to the SAME digest as build/actor.Dockerfile. A floating
+# :slim silently changes the entrypoint path and the writable-directory
+# expectations underneath a manifest that hardcodes both, and gateway and actor
+# drifting apart is worse still, since they speak OpenClaw's own protocol to each
+# other. Bump both files together.
+#
+#   crane digest ghcr.io/openclaw/openclaw:2026.8.2-slim
+FROM ghcr.io/openclaw/openclaw@sha256:5d25165995041caa6a7175bec82b25ad98c44eb269bb42435da8e27ec06e6be4
 USER 0
 COPY --from=ate /out/kubectl-ate /usr/local/bin/kubectl-ate
 # Ship compiled dist + manifest + package.json + vendored @grpc; drop the .ts sources.

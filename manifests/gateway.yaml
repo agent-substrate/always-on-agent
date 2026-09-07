@@ -25,9 +25,6 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list"]
-  - apiGroups: ["ate.dev"]
-    resources: ["workerpools", "actortemplates"]
-    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -40,6 +37,36 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: openclaw-gateway
+  apiGroup: rbac.authorization.k8s.io
+---
+# ateapi accepts either a podcert mTLS identity or a JWT bearer token. kubectl-ate
+# dials without a client cert, so it mints one: a TokenRequest for the `ate-client`
+# ServiceAccount in ate-system, audienced to the API server. Without this the
+# gateway's every call fails `Unauthenticated: missing bearer token`. Scoped to
+# that one ServiceAccount by resourceNames.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openclaw-gateway-ate-client-token
+  namespace: ate-system
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["ate-client"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openclaw-gateway-ate-client-token
+  namespace: ate-system
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-gateway
+    namespace: openclaw
+roleRef:
+  kind: Role
+  name: openclaw-gateway-ate-client-token
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: v1
@@ -88,18 +115,37 @@ spec:
         # into the PVC state dir (its registry lives under .openclaw, so it must be
         # installed at runtime, not baked into the image). Config is copied first so
         # `plugins install`'s config validation (which requires role) passes.
+        #
+        # HOME points *into* the PVC rather than at it, so ~/.openclaw is a
+        # subdirectory of the mount instead of the mount root. OpenClaw writes its
+        # state atomically and chmods the containing directory, and a PVC's mount
+        # root is owned by root -- fsGroup sets the group and the setgid bit, never
+        # the owner -- so anything writing directly into the mount root fails with
+        # `EPERM: fchmod`. Setting OPENCLAW_CONFIG_DIR alone is not enough: the
+        # plugin registry path is derived from HOME regardless. The mkdir below
+        # runs as uid 1000, so the directory is owned by the user that chmods it.
         - name: config-and-plugin-init
           image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway@REPLACE_WITH_GATEWAY_DIGEST
           command: ["sh", "-c"]
           args:
             - |
-              cp /config/openclaw.json /home/node/.openclaw/openclaw.json
-              node /app/dist/index.js plugins install /app/extensions/substrate --force
+              mkdir -p /home/node/state/.openclaw
+              cp /config/openclaw.json /home/node/state/.openclaw/openclaw.json
+              node /app/openclaw.mjs plugins install /app/extensions/substrate --force --accept-capabilities
+              # WhatsApp is no longer bundled in the OpenClaw image; it is an
+              # external ClawHub plugin, and its version has to track the base
+              # image (the floating `@openclaw/whatsapp` refuses to install
+              # against an older runtime: "requires plugin API >=X"). Bump this
+              # with the base digest in build/gateway.Dockerfile. It runs here
+              # rather than in the gateway container because installing its
+              # dependencies needs more memory than the gateway's limit allows,
+              # and it is skipped if already present on the PVC.
+              node /app/openclaw.mjs plugins install clawhub:@openclaw/whatsapp@2026.8.2 --accept-capabilities || true
           env:
             - name: HOME
-              value: /home/node
+              value: /home/node/state
             - name: OPENCLAW_CONFIG_DIR
-              value: /home/node/.openclaw
+              value: /home/node/state/.openclaw
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -107,19 +153,21 @@ spec:
               drop: ["ALL"]
           volumeMounts:
             - name: openclaw-home
-              mountPath: /home/node/.openclaw
+              mountPath: /home/node/state
             - name: config
               mountPath: /config
               readOnly: true
             - name: tmp-volume
               mountPath: /tmp
+            - name: cache-volume
+              mountPath: /home/node/state/.cache
       containers:
         - name: gateway
           # OpenClaw slim + compiled substrate plugin + kubectl-ate (built by build/gateway.Dockerfile).
           image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway@REPLACE_WITH_GATEWAY_DIGEST
           command:
             - node
-            - /app/dist/index.js
+            - /app/openclaw.mjs
             - gateway
             - --bind
             - lan
@@ -131,9 +179,9 @@ spec:
               protocol: TCP
           env:
             - name: HOME
-              value: /home/node
+              value: /home/node/state
             - name: OPENCLAW_CONFIG_DIR
-              value: /home/node/.openclaw
+              value: /home/node/state/.openclaw
             - name: NODE_ENV
               value: production
             # Lets the plugin's kubectl-ate reach ateapi directly (no deployment lookup).
@@ -150,14 +198,18 @@ spec:
                 optional: true
           resources:
             requests:
-              memory: 256Mi
+              memory: 512Mi
               cpu: 100m
             limits:
-              # Headroom for the gateway node process + the kubectl-ate child it
-              # spawns for actor create/suspend. The gateway takes ~30-40s to open
-              # its HTTP listener under gVisor-neighbor CPU pressure, so probes use
-              # curl (cheap) rather than spawning a full node process each cycle.
-              memory: 640Mi
+              # Headroom for the gateway node process, the WhatsApp channel plugin
+              # and the kubectl-ate child it spawns for actor create/suspend. 640Mi
+              # was enough before WhatsApp moved out of the base image into a
+              # plugin; with it loaded the node heap hits its limit during startup
+              # and the container dies with "Reached heap limit". The gateway takes
+              # ~30-40s to open its HTTP listener under gVisor-neighbor CPU
+              # pressure, so probes use curl (cheap) rather than spawning a full
+              # node process each cycle.
+              memory: 1536Mi
               cpu: 600m
           livenessProbe:
             exec:
@@ -180,14 +232,22 @@ spec:
               drop: ["ALL"]
           volumeMounts:
             - name: openclaw-home
-              mountPath: /home/node/.openclaw
+              mountPath: /home/node/state
             - name: tmp-volume
               mountPath: /tmp
+            - name: cache-volume
+              mountPath: /home/node/state/.cache
       volumes:
         - name: openclaw-home
           persistentVolumeClaim:
             claimName: openclaw-gateway-pvc
         - name: tmp-volume
+          emptyDir: {}
+        # The root filesystem is read-only, but OpenClaw needs a writable cache
+        # dir under HOME (it falls back to ~/.cache/openclaw-<uid>) and aborts at
+        # startup if it cannot create one. Nested inside the PVC mount because HOME
+        # is, but kept an emptyDir: it is pure scratch and should not eat the claim.
+        - name: cache-volume
           emptyDir: {}
         - name: config
           configMap:

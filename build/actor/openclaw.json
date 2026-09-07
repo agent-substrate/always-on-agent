@@ -1,11 +1,13 @@
 {
+  "cron": { "enabled": false },
   "gateway": {
     "port": 80,
     "bind": "lan",
     "mode": "local",
     "auth": { "mode": "token" },
     "controlUi": { "enabled": false },
-    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } },
+    "trustedProxies": ["169.254.0.0/16"]
   },
   "agents": { "defaults": { "model": "google/gemini-3-flash-preview" } },
   "channels": {}

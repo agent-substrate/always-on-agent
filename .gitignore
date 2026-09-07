@@ -3,9 +3,6 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Transient Dockerfile deploy-demo.sh renders for the project-scoped actor FROM
-build/actor.Dockerfile.*
-
 # Python
 __pycache__/
 *.pyc

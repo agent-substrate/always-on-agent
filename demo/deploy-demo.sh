@@ -161,7 +161,8 @@ golden_ready() {
   local deadline=$((SECONDS + 420)) json snapshot err
   while ((SECONDS < deadline)); do
     if json=$(kubectl ate get actor-template "$TEMPLATE" -a "$ATESPACE" -o json 2>/dev/null); then
-      snapshot=$(jq -r '.actorTemplates[0].status.goldenSnapshotStatus.goldenSnapshot.name // empty' <<<"$json")
+      # ExternalSnapshot identifies itself by URI; there is no name field.
+      snapshot=$(jq -r '.actorTemplates[0].status.goldenSnapshotStatus.goldenSnapshot.snapshotUri // empty' <<<"$json")
       [ -n "$snapshot" ] && { echo "    golden snapshot ready: $snapshot"; return 0; }
       err=$(jq -r '.actorTemplates[0].status.goldenSnapshotStatus.errorMessage // empty' <<<"$json")
       [ -n "$err" ] && { echo "    golden snapshot FAILED: $err" >&2; return 1; }

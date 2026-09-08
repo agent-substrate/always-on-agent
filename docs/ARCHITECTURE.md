@@ -124,15 +124,27 @@ file**:
 | `src/gateway/server.impl.ts` (startup wiring) | Plugin `register(api)` + `api.registerService({start,stop})` with `activation.onStartup` |
 | `package.json` (gRPC deps) | The plugin's own `package.json` |
 
-The plugin uses only the public plugin surface — modeled on the bundled `acpx`
+The plugin uses only the public plugin surface, modeled on the bundled `acpx`
 extension. It runs entirely in the **gateway role** (`substrate.role: "gateway"`);
 the actor stays a plain, unmodified OpenClaw serving `/v1/chat/completions`:
 - `registerAcpRuntimeBackend({ id: "substrate", runtime })` +
   `api.on("reply_dispatch", tryDispatchAcpReplyHook)` to route turns to the actor.
 - Per-conversation placement: create-if-absent (`CreateActor`) and, after the idle
-  window with no in-flight turn, `SuspendActor` — both control-plane calls made
-  from the gateway, which holds the credentials. (A sandboxed actor cannot call the
-  control plane: it is given only its name at `/run/ate/actor-id`, no podcert/JWT.)
+  window with no in-flight turn, `SuspendActor`. Both are control-plane calls made
+  from the gateway, which holds the credentials.
+
+**Why idle-suspend lives in the gateway and not in the actor.** A sandboxed actor
+cannot call the control plane on current Substrate, so it cannot suspend itself.
+Substrate can project identity *facts* into the sandbox (`SystemInfoDataSource`
+offers `actorMetadata` and `trustBundle`, which is how we get `/run/ate/actor-id`,
+`/run/ate/atespace`, `/run/ate/actor-uid` and `/run/ate/trust-bundle.pem`), but it
+projects no client credential: no podcert, no JWT, no key material. The trust
+bundle lets the actor *verify* ateapi; nothing lets it *authenticate to* ateapi,
+and ateapi requires mTLS. So the plugin has no actor-side role at all, and the
+actor image ships stock OpenClaw with the plugin deliberately left out. Until
+Substrate can issue a sandboxed workload a credential scoped to acting on
+itself, gateway-driven suspend is the only design that works. That credential is
+the one thing we would ask for upstream to make the actor self-sufficient.
 
 Install = compile `extensions/substrate/` to JS (`dist/`), declare
 `openclaw.extensions` in its `package.json`, and register it with

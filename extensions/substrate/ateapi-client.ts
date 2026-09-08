@@ -13,8 +13,8 @@
 // limitations under the License.
 /**
  * Shared mTLS gRPC client for the Substrate ateapi control plane
- * (`ateapi.Control`). Used by both the gateway-side provisioner (CreateActor)
- * and the actor-side idle monitor (SuspendActor).
+ * (`ateapi.Control`). Used by the gateway-side provisioner (CreateActor) and
+ * idle suspender (SuspendActor).
  *
  * Current OSS ateapi runs auth-mode=mtls: when client cert/key are provided the
  * call presents a podcert client cert; otherwise it falls back to server-only

@@ -16,17 +16,20 @@
  *
  * Drop-in: place this folder under `extensions/` and enable it via
  * `plugins.entries.substrate.enabled = true` in openclaw.json. It requires
- * NO edits to any existing OpenClaw file — config is declared in
+ * NO edits to any existing OpenClaw file: config is declared in
  * openclaw.plugin.json, and startup wiring runs through the plugin service +
  * hook API.
  *
  * Gateway role: registers a "substrate" ACP runtime backend that maps each
  * conversation to its own Substrate actor (create-if-absent from a golden
- * template, then forward turns over HTTP via atenet), and wires the generic ACP
- * reply-dispatch hook so channels bound to backend "substrate" are delegated.
+ * template, then forward turns over HTTP via atenet), wires the generic ACP
+ * reply-dispatch hook so channels bound to backend "substrate" are delegated,
+ * and suspends each actor once its conversation goes idle.
  *
- * Actor role: watches agent activity via plugin hooks and calls
- * ateapi.SuspendActor once idle, freeing the worker pod.
+ * There is deliberately no actor-side role. Substrate projects an actor's
+ * identity into the sandbox but no client credential, and ateapi requires mTLS,
+ * so an actor cannot call the control plane to suspend itself. See
+ * docs/ARCHITECTURE.md.
  */
 import {
   registerAcpRuntimeBackend,
@@ -38,17 +41,16 @@ import { createSubstrateAcpRuntime } from "./acp-runtime.js";
 import { createActorProvisioner } from "./actor-provisioner.js";
 import { ateApiConfigFromEnv } from "./ateapi-client.js";
 import { createKubectlAteClient } from "./kubectl-ate-client.js";
-import { createIdleMonitor } from "./idle-monitor.js";
 import { createIdleSuspender } from "./idle-suspender.js";
 
 const BACKEND_ID = "substrate";
 const DEFAULT_ATEAPI = "api.ate-system.svc.cluster.local:443";
 
 type SubstrateConfig = {
-  role?: "gateway" | "actor";
+  role?: "gateway";
   // Gateway role: per-conversation actor placement.
   atespace?: string;
-  template?: string; // "<namespace>/<name>" golden ActorTemplate
+  template?: string; // bare name of the golden ActorTemplate, resolved in atespace
   templateForAgent?: Record<string, string>;
   actorDomain?: string;
   actorToken?: string;
@@ -56,9 +58,9 @@ type SubstrateConfig = {
   // or "kubectl-ate" (shells out to kubectl-ate; for pods without a podcert).
   provisioner?: "ateapi" | "kubectl-ate";
   kubectlAtePath?: string;
-  // Actor role.
+  // Idle window before the gateway suspends a conversation's actor.
   idleTimeoutSeconds?: number;
-  // Both roles: ateapi control-plane address.
+  // ateapi control-plane address.
   ateapiAddress?: string;
 };
 
@@ -115,27 +117,6 @@ const plugin = {
       });
       // Route turns whose binding resolves to an ACP backend (e.g. "substrate").
       api.on("reply_dispatch", (event, ctx) => tryDispatchAcpReplyHook(event, ctx));
-    }
-
-    // --- Actor role: self-suspend when idle ---
-    if (cfg.role === "actor") {
-      const monitor = createIdleMonitor({
-        idleTimeoutSeconds: cfg.idleTimeoutSeconds ?? 120,
-        ateapiAddress: cfg.ateapiAddress,
-      });
-      // Track in-flight work purely through the public hook surface.
-      api.on("before_agent_run", () => monitor.onRunStart());
-      api.on("agent_end", () => monitor.onRunEnd());
-      api.on("message_received", () => monitor.touch());
-      api.registerService({
-        id: "substrate-actor-idle",
-        start(ctx) {
-          monitor.start(ctx.logger);
-        },
-        stop() {
-          monitor.stop();
-        },
-      });
     }
   },
 };

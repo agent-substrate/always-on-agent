@@ -142,7 +142,7 @@ export function createSubstrateAcpRuntime(config: SubstrateAcpRuntimeConfig): Ac
     },
 
     async close() {
-      /* no-op: actor self-suspends on idle */
+      /* no-op: the gateway's idle suspender suspends the actor (idle-suspender.ts) */
     },
   };
   return runtime;

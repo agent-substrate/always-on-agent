@@ -37,7 +37,7 @@ COPY extensions/substrate/ ./
 RUN npm install --omit=dev \
  && npx --yes esbuild@0.24.2 \
       index.ts acp-runtime.ts actor-router.ts actor-provisioner.ts \
-      ateapi-client.ts kubectl-ate-client.ts idle-monitor.ts idle-suspender.ts \
+      ateapi-client.ts kubectl-ate-client.ts idle-suspender.ts \
       --format=esm --platform=node --target=node20 --outdir=dist \
  && cp ateapi.proto dist/ateapi.proto
 

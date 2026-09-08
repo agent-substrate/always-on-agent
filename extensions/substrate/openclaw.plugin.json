@@ -1,7 +1,7 @@
 {
   "id": "substrate",
   "name": "Agent Substrate",
-  "description": "Split OpenClaw into an always-on gateway (presence) and a suspendable Substrate actor (cognition). Registers a 'substrate' ACP backend on the gateway and self-suspends the actor when idle.",
+  "description": "Split OpenClaw into an always-on gateway (presence) and a suspendable Substrate actor (cognition). Runs on the gateway: registers a 'substrate' ACP backend that routes turns to the actor and suspends it once the conversation is idle.",
   "activation": {
     "onStartup": true
   },
@@ -13,8 +13,8 @@
     "properties": {
       "role": {
         "type": "string",
-        "enum": ["gateway", "actor"],
-        "description": "Which half of the split this instance runs."
+        "enum": ["gateway"],
+        "description": "Which half of the split this instance runs. Only the gateway loads this plugin; the actor is stock OpenClaw."
       },
       "atespace": {
         "type": "string",
@@ -58,24 +58,24 @@
         "type": "number",
         "minimum": 5,
         "default": 120,
-        "description": "Actor role: seconds of inactivity before the actor self-suspends."
+        "description": "Gateway role: seconds of inactivity before the gateway suspends a conversation's actor."
       },
       "ateapiAddress": {
         "type": "string",
         "minLength": 1,
         "default": "api.ate-system.svc.cluster.local:443",
-        "description": "Actor role: gRPC address of the Substrate ateapi control plane for SuspendActor."
+        "description": "Gateway role: gRPC address of the Substrate ateapi control plane."
       }
     }
   },
   "uiHints": {
-    "role": { "label": "Role", "help": "gateway = holds channels + routes turns; actor = runs the agent and self-suspends." },
+    "role": { "label": "Role", "help": "gateway: holds the channels, routes turns to the actor, and suspends the actor when idle." },
     "atespace": { "label": "Atespace", "help": "Atespace new conversation actors are created in (gateway role only)." },
     "template": { "label": "Actor Template", "help": "Golden ActorTemplate conversation actors derive from, by bare name (gateway role only)." },
     "actorDomain": { "label": "Actor Domain", "help": "DNS domain actors are addressed under (gateway role only)." },
     "actorToken": { "label": "Actor Token", "help": "Auth token for the actor's HTTP API (gateway role only)." },
-    "idleTimeoutSeconds": { "label": "Idle Timeout (s)", "help": "How long the actor waits with no active work before suspending." },
-    "ateapiAddress": { "label": "ateapi Address", "help": "Substrate control-plane gRPC endpoint for SuspendActor." }
+    "idleTimeoutSeconds": { "label": "Idle Timeout (s)", "help": "How long a conversation sits with no active work before its actor is suspended." },
+    "ateapiAddress": { "label": "ateapi Address", "help": "Substrate control-plane gRPC endpoint (gateway role only)." }
   },
   "configContracts": {
     "secretInputs": {

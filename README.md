@@ -4,8 +4,8 @@ Run OpenClaw personal-AI-assistant instances on GKE with [Agent Substrate](https
 minimizing compute cost. OpenClaw agents are idle >95% of the time but must appear
 online 24/7 for channels like WhatsApp. We resolve that by **splitting presence
 from cognition**: an always-on gateway holds the channel connections, while the
-expensive agent runs as a suspendable Substrate actor that self-suspends when idle
-and auto-resumes on demand.
+expensive agent runs as a suspendable Substrate actor. The gateway suspends it
+once the conversation goes idle, and the next message auto-resumes it on demand.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and tradeoffs (with diagrams).
 
@@ -34,7 +34,7 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
 
 | Path | What |
 |------|------|
-| `extensions/substrate/` | The drop-in OpenClaw plugin (manifest, ACP backend, idle monitor) |
+| `extensions/substrate/` | The drop-in OpenClaw plugin (manifest, ACP backend, actor provisioner, idle suspender) |
 | `manifests/` | Substrate + gateway K8s resources (WorkerPool, ActorTemplate, gateway, ingress) |
 | `build/` | Image build: gateway/actor Dockerfiles, Cloud Build configs, actor image inputs (`build/actor/`) |
 | `demo/` | WhatsApp demo config + deploy script + live dashboard |
@@ -56,8 +56,9 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
 
 - **Copy `extensions/substrate/`** into your OpenClaw tree (or bundle via
   `OPENCLAW_EXTENSIONS`). No other OpenClaw code changes.
-- **Config only, per deployment**: set `plugins.entries.substrate` (role +
-  actor URL/token or idle timeout) and ACP bindings in `openclaw.json`.
+- **Config only, per deployment**: set `plugins.entries.substrate` on the gateway
+  (atespace, golden template, actor token, idle timeout) and ACP bindings in
+  `openclaw.json`. The actor image runs stock OpenClaw with no plugin.
 - **On the Substrate side** (targets current OSS `agent-substrate/substrate`,
   CRD group `ate.dev`): apply the `WorkerPool` + `ActorTemplate` manifests
   (`ate.dev/v1alpha1`), point the gVisor `SandboxConfig` at a runsc build that

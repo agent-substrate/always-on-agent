@@ -42,8 +42,9 @@ RUN chown -R 1000:1000 /home/node/.openclaw
 USER 1000
 
 # NOTE: the substrate plugin is deliberately NOT installed here, only in the
-# gateway image. Its actor role exists to self-suspend from inside the sandbox,
-# which cannot work: an actor gets no ateapi credentials (only /run/ate/actor-id
-# is projected), so the call has no client cert to present and fails TLS. The
-# gateway already holds the credentialed path it uses to create actors, and
-# drives idle-suspend from there. See extensions/substrate/idle-suspender.ts.
+# gateway image. The actor has no reason to load it: it cannot call the control
+# plane to suspend itself, because Substrate projects an actor's identity
+# (/run/ate/actor-id, atespace, actor-uid, trust-bundle.pem) but no client
+# credential, so such a call has no cert to present and fails mTLS. The gateway
+# already holds the credentialed path it uses to create actors, and drives
+# idle-suspend from there. See extensions/substrate/idle-suspender.ts.

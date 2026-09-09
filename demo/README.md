@@ -37,9 +37,9 @@ WhatsApp user
   **Container Registry**, and **Cloud Storage** enabled.
 - A **GCS bucket** for golden snapshots, with **both** `atelet` and `ate-api-server`
   granted `roles/storage.objectAdmin` and `roles/storage.bucketViewer` on it. The
-  packaged installer in Step 1 does this for you (`setup-gcp bootstrap`, step 6/7).
-  You only have to do it by hand if you took the from-source path below, which
-  installs the control plane and provisions no GCP resources at all:
+  from-source install in Step 1 provisions no GCP resources at all, so this one is
+  yours to do. `go run ./tools/setup-gcp bootstrap` from a Substrate checkout does
+  it, and is idempotent against a bucket that already exists, or by hand:
 
   ```bash
   WI="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT_ID.svc.id.goog/subject/ns/ate-system/sa"
@@ -66,36 +66,8 @@ WhatsApp user
 
 ## Step 1 — Install Agent Substrate
 
-On GKE, use the packaged installer. It provisions the GCP resources and installs
-the control plane through an interactive wizard:
-
-```bash
-git clone https://github.com/ai-on-gke/substrate-gke.git
-cd substrate-gke
-gcloud auth application-default login
-make run          # interactive installer; `make doctor` for preflight checks only
-```
-
-Substrate needs the PodCertificate Kubernetes beta APIs, which GKE does not
-enable by default. The installer turns them on for the cluster it creates. On a
-cluster you already have, the install otherwise dies at
-`waiting for ClusterTrustBundle podidentity.podcert.ate.dev:identity:primary-bundle:
-context deadline exceeded`, which does not say what is missing. Check with
-`kubectl api-resources | grep clustertrustbundles`, and turn them on with:
-
-```bash
-gcloud container clusters update "$CLUSTER" --zone "$ZONE" \
-  --enable-kubernetes-unstable-apis=certificates.k8s.io/v1beta1/podcertificaterequests,certificates.k8s.io/v1beta1/clustertrustbundles
-```
-
-That is only half of it. The update flips the API server, but nodes created
-before it keep a kubelet that cannot project the bundle, and every ate-system
-pod then hangs in `ContainerCreating` on
-`ClusterTrustBundle projection is not supported in static kubelet mode`. The
-nodes have to be recreated afterwards.
-
-<details>
-<summary>Installing from a Substrate checkout instead</summary>
+Install from a Substrate checkout. This is the path the demo was developed and
+validated against:
 
 ```bash
 git clone https://github.com/agent-substrate/substrate.git
@@ -104,16 +76,52 @@ cp hack/ate-dev-env.sh.example .ate-dev-env.sh   # then edit for your project/cl
 hack/install-ate.sh --deploy-ate-system
 ```
 
-This is the from-source path the demo was developed against. Two things it does
-*not* do, both of which the packaged installer handles: it provisions no GCP
-resources, so the snapshot bucket and its IAM bindings are yours to create (see
-Prerequisites, and `go run ./tools/setup-gcp bootstrap` will do it), and it cannot
-upgrade a cluster installed from an older build in place. See
+It builds the control plane with ko and installs it, and it provisions no GCP
+resources, so the snapshot bucket and its IAM bindings are yours to create first
+(see Prerequisites). It also cannot upgrade a cluster installed from an older
+build in place; see
 [`docs/upgrade.md`](https://github.com/agent-substrate/substrate/blob/main/docs/upgrade.md).
+
+**Create the cluster with the PodCertificate beta APIs on.** Substrate needs
+`certificates.k8s.io/v1beta1/podcertificaterequests` and `clustertrustbundles`,
+and GKE does not enable them by default. Pass them at create time:
+
+```bash
+gcloud container clusters create "$CLUSTER" --zone "$ZONE" \
+  --enable-kubernetes-unstable-apis=certificates.k8s.io/v1beta1/podcertificaterequests,certificates.k8s.io/v1beta1/clustertrustbundles
+```
+
+Without them the install dies at `waiting for ClusterTrustBundle
+podidentity.podcert.ate.dev:identity:primary-bundle: context deadline exceeded`,
+which does not say what is missing. Check with
+`kubectl api-resources | grep clustertrustbundles`.
+
+On a cluster you already have, `gcloud container clusters update` with the same
+flag is only half of it. The update flips the API server, but nodes created
+before it keep a kubelet that cannot project the bundle, and every ate-system pod
+then hangs in `ContainerCreating` on `ClusterTrustBundle projection is not
+supported in static kubelet mode`. Recreate the node pools afterwards, then
+re-run the install to restore the `ate.dev/substrate-version` node label the
+recreated pools drop.
+
+<details>
+<summary>The packaged installer (not usable yet)</summary>
+
+[`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke) wraps all
+of the above in an interactive wizard (`make run`, or `make doctor` for preflight
+checks only) and provisions the GCP resources for you, including the bucket and
+its IAM. It is the nicer path and will become the recommended one.
+
+It does not work yet. Its default track installs pre-built release images, and at
+v0.1.0 those are not readable outside the project that publishes them, so the
+pull fails with 403 and the installer reports it as an unrelated rollout timeout
+(`waiting for deployment/podcertificate-controller ...: client rate limiter Wait
+returned an error`), which never mentions an image pull. Use the from-source path
+above until that is fixed.
 </details>
 
-Either way, you need the `kubectl-ate` CLI on your PATH, built from the same
-Substrate commit the control plane runs:
+You also need the `kubectl-ate` CLI on your PATH, built from the same Substrate
+commit the control plane runs:
 
 ```bash
 make build-atectl && export PATH="$PWD/bin:$PATH"

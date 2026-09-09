@@ -42,10 +42,12 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
 
 ## Quick start (demo)
 
-1. Install Substrate on a GKE cluster with the packaged installer at
-   [`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke)
-   (`make run`), or from a Substrate checkout with
-   `hack/install-ate.sh --deploy-ate-system`.
+1. Install Substrate on a GKE cluster from a Substrate checkout with
+   `hack/install-ate.sh --deploy-ate-system`. Create the cluster with the
+   PodCertificate beta APIs enabled, and set up the snapshot bucket and its IAM
+   first; see [`demo/README.md`](demo/README.md) Step 1. (The packaged installer
+   at [`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke) does
+   all of that for you, but its pre-built image track is not usable yet.)
 2. `export PROJECT_ID=… GCS_BUCKET=… GEMINI_API_KEY=…`
 3. `cd demo && ./deploy-demo.sh` — builds the images, pins them by digest, deploys
    the WorkerPool, ActorTemplate, and gateway, then prints next steps (link

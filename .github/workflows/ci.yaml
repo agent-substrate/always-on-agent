@@ -124,8 +124,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Build the character from its codepoint rather than writing it, so this
+      # check does not match its own source.
       - run: |
-          if git grep -In $'—' -- . ; then
+          if git grep -In "$(printf '\u2014')" -- . ; then
             echo "em dashes found; use a comma, a colon or a plain hyphen"
             exit 1
           fi

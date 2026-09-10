@@ -30,8 +30,8 @@ jobs:
     name: plugin transpiles
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "24"
       # The gateway image transpiles with esbuild and no tsc, so this reproduces
@@ -64,8 +64,8 @@ jobs:
     name: dashboard parses
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "24"
       - working-directory: demo/dashboard
@@ -77,7 +77,7 @@ jobs:
     name: yaml and json parse
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: parse every yaml and json
         run: |
           python3 - <<'PY'
@@ -111,7 +111,7 @@ jobs:
     name: shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: |
           for f in $(git ls-files '*.sh'); do
@@ -123,7 +123,7 @@ jobs:
     name: no em dashes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Build the character from its codepoint rather than writing it, so this
       # check does not match its own source.
       - run: |

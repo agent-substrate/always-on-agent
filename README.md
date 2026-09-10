@@ -11,11 +11,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and trade
 
 ## Two ways to integrate
 
-### 1. Drop-in plugin (recommended) — zero edits to existing OpenClaw files
+### 1. Drop-in plugin (recommended): zero edits to existing OpenClaw files
 Everything lives in `extensions/substrate/`. Copy it into OpenClaw's `extensions/`
 and enable it in `openclaw.json`. Config is declared in the plugin manifest
 (`openclaw.plugin.json` → `configSchema`) and startup wiring runs through
-OpenClaw's plugin service + hook API, so **no core OpenClaw file is modified** —
+OpenClaw's plugin service + hook API, so **no core OpenClaw file is modified**:
 no changes to config types, Zod schema, `server.impl.ts`, channels, agents, or
 skills.
 
@@ -49,7 +49,7 @@ The same logic wired directly into the build (a new `src/substrate/` module plus
    at [`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke) does
    all of that for you, but its pre-built image track is not usable yet.)
 2. `export PROJECT_ID=… GCS_BUCKET=… GEMINI_API_KEY=…`
-3. `cd demo && ./deploy-demo.sh` — builds the images, pins them by digest, deploys
+3. `cd demo && ./deploy-demo.sh` builds the images, pins them by digest, deploys
    the WorkerPool, ActorTemplate, and gateway, then prints next steps (link
    WhatsApp, send a message). See [`demo/README.md`](demo/README.md) for the full
    walkthrough.
@@ -85,12 +85,12 @@ The current-OSS `atelet` already discovers snapshot files dynamically
 `checkpoint.img` with no change.
 
 Because the plugin integrates *below* the framework via OpenClaw's own ACP
-protocol and plugin API, community-maintained channels/agents/skills — including
-future ones — work unmodified.
+protocol and plugin API, community-maintained channels/agents/skills, including
+future ones, work unmodified.
 
 ## License
 
-Apache License 2.0 — see [`LICENSE`](LICENSE).
+Apache License 2.0. See [`LICENSE`](LICENSE).
 
 ## Trademarks
 

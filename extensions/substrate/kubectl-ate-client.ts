@@ -16,7 +16,7 @@
  *
  * Used when the gateway cannot present a podcert mTLS client cert to ateapi
  * (a plain Deployment on a pre-1.36 cluster has no PodCertificate). kubectl-ate
- * port-forwards to ateapi and handles auth-mode detection itself — the same
+ * port-forwards to ateapi and handles auth-mode detection itself, the same
  * mechanism the dashboard already uses successfully in this cluster. Requires
  * the kubectl-ate binary in the pod + RBAC for pods/portforward.
  */

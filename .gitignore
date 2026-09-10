@@ -8,7 +8,7 @@ __pycache__/
 *.pyc
 .venv/
 
-# Local state / secrets — never commit
+# Local state / secrets, never commit
 .openclaw/
 *.local
 *.env

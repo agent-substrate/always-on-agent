@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 # Deploy the WhatsApp demo: OpenClaw on Agent Substrate.
 #
 # Reproducible from a clean checkout. It (optionally) builds the two images with
@@ -49,7 +62,7 @@ if ! kubectl get namespace ate-system &>/dev/null; then
   fi
 fi
 kubectl -n ate-system get deployment ate-api-server &>/dev/null \
-  || die "ate-api-server not found in ate-system — Substrate may be partially installed."
+  || die "ate-api-server not found in ate-system; Substrate may be partially installed."
 if ! command -v kubectl-ate &>/dev/null && ! kubectl ate --version &>/dev/null 2>&1; then
   die "kubectl-ate CLI not found. Build it from the Substrate repo (make build-atectl) and put bin/kubectl-ate on your PATH."
 fi
@@ -83,7 +96,7 @@ echo "[2/8] Resolving image digests..."
 digest_of() {
   gcloud container images describe "$1:$IMAGE_TAG" \
     --format='value(image_summary.digest)' 2>/dev/null \
-    || die "Cannot resolve digest for $1:$IMAGE_TAG — build it first (BUILD_IMAGES=true)."
+    || die "Cannot resolve digest for $1:$IMAGE_TAG; build it first (BUILD_IMAGES=true)."
 }
 GATEWAY_DIGEST="$(digest_of "$GATEWAY_IMAGE")"
 ACTOR_DIGEST="$(digest_of "$ACTOR_IMAGE")"

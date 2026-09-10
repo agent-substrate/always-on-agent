@@ -31,10 +31,12 @@ WhatsApp user
 
 ## Prerequisites
 
-- A **GKE cluster** with `kubectl` configured, and **Agent Substrate installed** on it
-  (see Step 1).
+- A **GKE cluster** created with the PodCertificate beta APIs on, with `kubectl`
+  configured against it, and **Agent Substrate installed** on it (all of Step 1).
 - **gcloud** authenticated to a GCP project (`gcloud auth login`), with **Cloud Build**,
   **Container Registry**, and **Cloud Storage** enabled.
+- On your PATH: `kubectl`, `gcloud`, `go` (to build the Substrate CLI), and
+  [`ko`](https://ko.build) (the deploy script builds ateom with it).
 - A **GCS bucket** for golden snapshots, with **both** `atelet` and `ate-api-server`
   granted `roles/storage.objectAdmin` and `roles/storage.bucketViewer` on it. The
   from-source install in Step 1 provisions no GCP resources at all, so this one is
@@ -64,27 +66,15 @@ WhatsApp user
   the install's default gVisor `SandboxConfig` ships, with no runsc override needed
   (verified on the 20260622, 20260803 and 20260824 builds).
 
-## Step 1 — Install Agent Substrate
+## Step 1: Install Agent Substrate
 
 Install from a Substrate checkout. This is the path the demo was developed and
-validated against:
+validated against.
 
-```bash
-git clone https://github.com/agent-substrate/substrate.git
-cd substrate
-cp hack/ate-dev-env.sh.example .ate-dev-env.sh   # then edit for your project/cluster
-hack/install-ate.sh --deploy-ate-system
-```
-
-It builds the control plane with ko and installs it, and it provisions no GCP
-resources, so the snapshot bucket and its IAM bindings are yours to create first
-(see Prerequisites). It also cannot upgrade a cluster installed from an older
-build in place; see
-[`docs/upgrade.md`](https://github.com/agent-substrate/substrate/blob/main/docs/upgrade.md).
-
-**Create the cluster with the PodCertificate beta APIs on.** Substrate needs
-`certificates.k8s.io/v1beta1/podcertificaterequests` and `clustertrustbundles`,
-and GKE does not enable them by default. Pass them at create time:
+**First, create the cluster with the PodCertificate beta APIs on.** Substrate
+needs `certificates.k8s.io/v1beta1/podcertificaterequests` and
+`clustertrustbundles`, and GKE does not enable them by default. They have to be
+passed at create time:
 
 ```bash
 gcloud container clusters create "$CLUSTER" --zone "$ZONE" \
@@ -104,6 +94,24 @@ supported in static kubelet mode`. Recreate the node pools afterwards, then
 re-run the install to restore the `ate.dev/substrate-version` node label the
 recreated pools drop.
 
+**Then install:**
+
+```bash
+git clone https://github.com/agent-substrate/substrate.git
+cd substrate
+cp hack/ate-dev-env.sh.example .ate-dev-env.sh   # then edit for your project/cluster
+hack/install-ate.sh --deploy-ate-system
+```
+
+It builds the control plane with ko and installs it, and it provisions no GCP
+resources, so the snapshot bucket and its IAM bindings are yours to create first
+(see Prerequisites). It also cannot upgrade a cluster installed from an older
+build in place; see
+[`docs/upgrade.md`](https://github.com/agent-substrate/substrate/blob/main/docs/upgrade.md).
+
+Keep this checkout. Step 3 builds the worker pods' `ateom` from it, so that
+component matches the control plane you just installed.
+
 <details>
 <summary>The packaged installer (not usable yet)</summary>
 
@@ -121,7 +129,7 @@ above until that is fixed.
 </details>
 
 You also need the `kubectl-ate` CLI on your PATH, built from the same Substrate
-commit the control plane runs:
+commit the control plane runs. From that same checkout:
 
 ```bash
 make build-atectl && export PATH="$PWD/bin:$PATH"
@@ -140,18 +148,28 @@ kubectl ate --version
 > stopped being a Kubernetes CRD, and `WorkerPool.spec.ateomImage` was renamed to
 > `workerImage`.
 
-## Step 2 — Set your config
+## Step 2: Set your config
 
 ```bash
-export PROJECT_ID="your-gcp-project"    # for gcr.io/<project>/openclaw-*
-export GCS_BUCKET="your-snapshot-bucket" # no gs:// prefix; must already exist
-export GEMINI_API_KEY="..."             # LLM provider key
+export PROJECT_ID="your-gcp-project"     # for gcr.io/<project>/openclaw-*
+export GCS_BUCKET="your-snapshot-bucket"  # no gs:// prefix; must already exist
+export GEMINI_API_KEY="..."              # LLM provider key
+export SUBSTRATE_REPO=/path/to/substrate # the checkout from Step 1
 # optional:
-# export SUBSTRATE_REPO=/path/to/substrate   # let deploy-demo.sh install Substrate for you
+# export ATEOM_IMAGE=...                     # prebuilt ateom-gvisor from that same commit,
+#                                            # instead of building it from SUBSTRATE_REPO
 # export WHATSAPP_PEER="+1..."               # enable scheduled status pings (E.164)
 ```
 
-## Step 3 — Deploy
+`SUBSTRATE_REPO` is required unless you set `ATEOM_IMAGE`. The worker pods' ateom
+has to be built from the same commit the control plane was installed from,
+because it speaks internal protos to atelet and ateapi, and a skewed build fails
+golden resume with an opaque error instead of a version message. The script
+builds it for you with `ko`, so you need `ko` on your PATH too.
+
+## Step 3: Deploy
+
+From your clone of *this* repo (not the Substrate checkout):
 
 ```bash
 cd always-on-agent/demo
@@ -167,7 +185,7 @@ ActorTemplate, gateway, and one demo actor. Force a rebuild with `BUILD_IMAGES=t
 > the plugin source vendored in this repo at `../extensions/substrate/`, so no
 > private base image and no OpenClaw source checkout is needed. If you already
 > have images, push them as `gcr.io/$PROJECT_ID/openclaw-gateway:demo` and
-> `...-actor:demo` and re-run — the script resolves their digests automatically.
+> `...-actor:demo` and re-run; the script resolves their digests automatically.
 
 > **Three versions have to move together.** The base image is pinned by digest to
 > OpenClaw `2026.8.2` in both Dockerfiles (`:slim` floats and rolled to `2026.9.1`
@@ -178,7 +196,7 @@ ActorTemplate, gateway, and one demo actor. Force a rebuild with `BUILD_IMAGES=t
 > gateway's CLI cannot drift away from the control plane. Bump all three in the
 > same change.
 
-## Step 4 — Link WhatsApp
+## Step 4: Link WhatsApp
 
 ```bash
 kubectl -n openclaw port-forward svc/openclaw-gateway 18789:18789
@@ -188,7 +206,7 @@ Open <http://localhost:18789>, log in with the gateway token the script printed,
 scan the QR shown by the WhatsApp plugin: **WhatsApp > Settings > Linked Devices >
 Link a Device**. Credentials persist on the gateway PVC, so you only scan once.
 
-## Step 5 — Try it and watch suspend/resume
+## Step 5: Try it and watch suspend/resume
 
 Message the linked WhatsApp account; the agent replies. Then watch the lifecycle:
 
@@ -208,7 +226,7 @@ next message, with the conversation preserved across the checkpoint. The idle
 window the gateway uses is `plugins.entries.substrate.config.idleTimeoutSeconds`
 in [`openclaw-demo-config.yaml`](openclaw-demo-config.yaml).
 
-Two things to know before you time it:
+Three things to know before you time it:
 
 - The **first** resume on a worker node that has never run a sandbox is slow
   enough that the router gives up (HTTP 504) before it finishes. Pre-warm the node

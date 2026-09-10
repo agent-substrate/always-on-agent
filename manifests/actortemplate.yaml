@@ -1,3 +1,16 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 # ActorTemplate for the suspendable OpenClaw agent.
 #
 # NOTE (schema change): ActorTemplate is no longer a Kubernetes CRD. Upstream
@@ -8,7 +21,7 @@
 #     kubectl ate create atespace openclaw
 #     kubectl ate create actor-template -f manifests/actortemplate.yaml
 #
-# `kubectl apply -f` no longer works — the actortemplates.ate.dev CRD is gone.
+# `kubectl apply -f` no longer works: the actortemplates.ate.dev CRD is gone.
 # Templates are also immutable now: there is no update, so deploy-demo.sh deletes
 # and recreates to change one.
 #
@@ -38,7 +51,7 @@ containers:
       - { name: OPENCLAW_CONFIG_DIR, value: /home/node/.openclaw }
       - { name: NODE_ENV, value: production }
       # Substrate removed valueFrom/secretKeyRef from ActorTemplate env in #835
-      # — actors are meant to get no direct access to Secrets, with credentials
+      # Actors are meant to get no direct access to Secrets, with credentials
       # injected on the egress route instead. That egress injection tier does
       # not exist yet, so both values below are literals substituted by
       # deploy-demo.sh at create time (same approach as Substrate's own
@@ -51,14 +64,14 @@ containers:
     volumeMounts:
       - name: system-info
         mountPath: /run/ate
-    # NOTE: no readyz probe — OpenClaw's /healthz reports "live" early (before
+    # NOTE: no readyz probe. OpenClaw's /healthz reports "live" early (before
     # plugin pre-warm), so the golden checkpoint is gated on atecontroller's
     # wall-clock warmup instead. That warmup is a hardcoded 20s on Substrate main
     # (goldenSnapshotWarmup); declaring a readyz probe on every container would
     # drop it to 0. 20s has been sufficient in testing.
     # atenet routes to actor port 80.
 volumes:
-  # The actor's own identity, projected as files. This is NOT automatic — without
+  # The actor's own identity, projected as files. This is NOT automatic: without
   # this volume /run/ate/actor-id simply does not exist. Nothing in the demo path
   # depends on it (the gateway drives suspend and already knows each actor's
   # name), but it is what an in-sandbox workload would read to learn who it is,

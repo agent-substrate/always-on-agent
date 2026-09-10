@@ -16,7 +16,7 @@ syntax = "proto3";
 // Subset of github.com/agent-substrate/substrate/pkg/proto/ateapipb needed by
 // this plugin. The package + service name MUST be `ateapi.Control` to match the
 // real server (the gRPC method path is /ateapi.Control/<Method>), and every
-// field number MUST match the server's ateapi.proto — protobuf is field-number
+// field number MUST match the server's ateapi.proto; protobuf is field-number
 // based, so a subset of fields is fine but the numbers must line up.
 package ateapi;
 

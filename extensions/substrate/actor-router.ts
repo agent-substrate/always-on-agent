@@ -15,8 +15,8 @@
  * Conversation → actor placement helpers.
  *
  * The actor name is derived from the canonical conversation key (OpenClaw's
- * sessionKey, which encodes the (accountId, peer) pair). Hashing — rather than
- * embedding accountId|peer — is deliberate: the peer's phone number never
+ * sessionKey, which encodes the (accountId, peer) pair). Hashing rather than
+ * embedding accountId|peer is deliberate: the peer's phone number never
  * appears in the actor name, DNS, or logs, and the result is always a valid
  * RFC-1123 DNS label regardless of peer format. The mapping is deterministic
  * and stable, so the same conversation always resolves to the same actor and
@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 
 export const DEFAULT_ACTOR_DOMAIN = "actors.resources.substrate.ate.dev";
 
-/** conv-<first 12 hex of sha256(sessionKey)> — deterministic, DNS-safe, stable. */
+/** conv-<first 12 hex of sha256(sessionKey)>: deterministic, DNS-safe, stable. */
 export function actorNameForConversation(canonicalSessionKey: string): string {
   const h = createHash("sha256").update(canonicalSessionKey).digest("hex").slice(0, 12);
   return `conv-${h}`;

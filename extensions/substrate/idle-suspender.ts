@@ -18,7 +18,7 @@
  * (only /run/ate/actor-id is bind-mounted), so it cannot suspend itself. The
  * gateway, which already holds the credentialed kubectl-ate path used to create
  * actors, instead tracks per-actor activity and calls SuspendActor once a
- * conversation's actor has been idle past the timeout — freeing its worker.
+ * conversation's actor has been idle past the timeout, freeing its worker.
  * Resume is automatic: the next turn hits atenet, which restores the actor
  * from its checkpoint.
  */
@@ -77,7 +77,7 @@ export function createIdleSuspender(opts: {
           if (now - ts < idleMs) continue;
           suspending.add(name);
           log?.info(
-            `substrate: actor ${opts.atespace}/${name} idle ${opts.idleTimeoutSeconds}s — suspending`,
+            `substrate: actor ${opts.atespace}/${name} idle ${opts.idleTimeoutSeconds}s, suspending`,
           );
           opts.client
             .suspendActor({ atespace: opts.atespace, name })

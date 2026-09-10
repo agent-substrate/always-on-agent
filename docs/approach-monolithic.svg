@@ -5,11 +5,11 @@
     <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#d93025"/></marker>
   </defs>
 
-  <text x="540" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#202124">Approach B — Monolithic + suspend-aware channels (rejected)</text>
+  <text x="540" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#202124">Approach B: Monolithic + suspend-aware channels (rejected)</text>
   <text x="540" y="56" text-anchor="middle" font-size="13" fill="#5f6368">The whole instance (channels + agent) is one suspendable actor. Outcome depends entirely on channel type.</text>
 
   <!-- CASE 1: webhook channel -->
-  <text x="60" y="100" font-size="14" font-weight="700" fill="#188038">CASE 1 — Webhook channel  (Telegram / Teams / LINE / SMS …)</text>
+  <text x="60" y="100" font-size="14" font-weight="700" fill="#188038">CASE 1 · Webhook channel  (Telegram / Teams / LINE / SMS …)</text>
   <rect x="40" y="115" width="180" height="70" rx="8" fill="#e8f0fe" stroke="#1a73e8" stroke-width="2"/>
   <text x="130" y="145" text-anchor="middle" font-size="12" font-weight="700" fill="#1a73e8">Platform</text>
   <text x="130" y="164" text-anchor="middle" font-size="9" fill="#5f6368">holds connection, POSTs to URL</text>
@@ -25,7 +25,7 @@
   <text x="640" y="185" text-anchor="middle" font-size="9" fill="#5f6368">but cold-wakes the WHOLE stack</text>
 
   <rect x="800" y="115" width="240" height="70" rx="8" fill="#e6f4ea" stroke="#188038" stroke-width="1.5"/>
-  <text x="920" y="140" text-anchor="middle" font-size="11" font-weight="700" fill="#188038">✓ Works — can reach true zero</text>
+  <text x="920" y="140" text-anchor="middle" font-size="11" font-weight="700" fill="#188038">✓ Works · can reach true zero</text>
   <text x="920" y="158" text-anchor="middle" font-size="9" fill="#5f6368">idle cost, but each wake reloads</text>
   <text x="920" y="172" text-anchor="middle" font-size="9" fill="#5f6368">channels + agent (heavier wake)</text>
 
@@ -35,7 +35,7 @@
   <line x1="60" y1="215" x2="1020" y2="215" stroke="#dadce0" stroke-width="1" stroke-dasharray="4 4"/>
 
   <!-- CASE 2: persistent channel -->
-  <text x="60" y="252" font-size="14" font-weight="700" fill="#d93025">CASE 2 — Persistent-connection channel  (WhatsApp / Discord / Slack / Signal / Matrix …)</text>
+  <text x="60" y="252" font-size="14" font-weight="700" fill="#d93025">CASE 2 · Persistent-connection channel  (WhatsApp / Discord / Slack / Signal / Matrix …)</text>
 
   <rect x="40" y="280" width="170" height="80" rx="8" fill="#e8f0fe" stroke="#1a73e8" stroke-width="2"/>
   <text x="125" y="308" text-anchor="middle" font-size="12" font-weight="700" fill="#1a73e8">Platform</text>
@@ -69,14 +69,14 @@
   <rect x="285" y="385" width="215" height="58" rx="5" fill="#fff" stroke="#d93025" stroke-width="1.2"/>
   <text x="392" y="406" text-anchor="middle" font-size="10" font-weight="700" fill="#d93025">Also: channel code changes</text>
   <text x="392" y="423" text-anchor="middle" font-size="9" fill="#5f6368">reconnect logic + webhook-URL</text>
-  <text x="392" y="436" text-anchor="middle" font-size="9" fill="#5f6368">rewriting per channel — unsustainable</text>
+  <text x="392" y="436" text-anchor="middle" font-size="9" fill="#5f6368">rewriting per channel · unsustainable</text>
 
   <!-- bottom summary -->
   <rect x="120" y="490" width="840" height="150" rx="8" fill="#f8f9fa" stroke="#dadce0"/>
   <text x="540" y="516" text-anchor="middle" font-size="13" font-weight="700" fill="#202124">Verdict</text>
-  <text x="540" y="540" text-anchor="middle" font-size="11" fill="#5f6368">• Webhook-only + deep-idle: the monolith can reach true zero idle cost — a genuine edge where it beats the split.</text>
+  <text x="540" y="540" text-anchor="middle" font-size="11" fill="#5f6368">• Webhook-only + deep-idle: the monolith can reach true zero idle cost, a genuine edge where it beats the split.</text>
   <text x="540" y="560" text-anchor="middle" font-size="11" fill="#5f6368">• Persistent channels (the most popular ones): the always-on cost can only be relocated, not removed,</text>
   <text x="540" y="576" text-anchor="middle" font-size="11" fill="#5f6368">   and every wake reloads the full heavy stack instead of just the agent.</text>
-  <text x="540" y="600" text-anchor="middle" font-size="11" fill="#188038" font-weight="700">The split holds only the cheap channel layer always-on, wakes just the agent, and needs zero channel changes —</text>
+  <text x="540" y="600" text-anchor="middle" font-size="11" fill="#188038" font-weight="700">The split holds only the cheap channel layer always-on, wakes just the agent, and needs zero channel changes,</text>
   <text x="540" y="618" text-anchor="middle" font-size="11" fill="#188038" font-weight="700">so it wins for the realistic multi-channel mix, and a multi-tenant gateway closes the webhook-only edge case.</text>
 </svg>

@@ -77,11 +77,11 @@ function addTimeline(actor, event, detail) {
 
 async function syncState() {
   try {
-    // Golden templates (k8s CRD, ate.dev) — shows the golden-snapshot status.
+    // Golden templates (k8s CRD, ate.dev): shows the golden-snapshot status.
     const tmplOut = await runCmd(
       `kubectl get actortemplates.ate.dev -n ${NS} -o json 2>/dev/null || echo '{}'`
     );
-    // Live actors (current OSS actor model: not k8s objects — listed from ateapi
+    // Live actors (current OSS actor model: not k8s objects, listed from ateapi
     // per atespace via kubectl-ate).
     const actorJsons = await Promise.all(
       ATESPACES.map((as) =>
@@ -193,9 +193,9 @@ async function syncState() {
             addEvent("whatsapp", "WhatsApp connected and ready!");
           }
         } else if (state.whatsapp.status === "connected") {
-          // connection dropped — reflect it live instead of latching "connected"
+          // connection dropped; reflect it live instead of latching "connected"
           state.whatsapp.status = "disconnected";
-          addEvent("whatsapp", "WhatsApp connection lost — not ready");
+          addEvent("whatsapp", "WhatsApp connection lost, not ready");
         }
       } catch {
         state.gatewayHealth.ready = readyRes.ok;
@@ -206,7 +206,7 @@ async function syncState() {
     }
     state.whatsapp.connected = state.gatewayHealth.ready === true;
 
-    // Linked phone number — read from creds once (or retry while unknown)
+    // Linked phone number, read from creds once (or retry while unknown)
     if (!state.whatsapp.number) {
       try {
         const gp = await runCmd(`kubectl -n ${NS} get pods -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}'`);
@@ -280,7 +280,7 @@ app.post("/api/whatsapp/connect", async (c) => {
       const r = await fetch(`${GATEWAY_URL}/readyz`, { signal: AbortSignal.timeout(2000) });
       const rd = await r.json();
       if (rd.ready === true) {
-        return c.json({ ok: false, error: "WhatsApp is already connected — refusing to reset. Only use this when disconnected." });
+        return c.json({ ok: false, error: "WhatsApp is already connected, refusing to reset. Only use this when disconnected." });
       }
     } catch {}
 
@@ -326,7 +326,7 @@ app.get("/api/state", (c) => {
       ? state.stats.totalLogicalActiveSec / state.stats.totalPhysicalActiveSec
       : 1.0;
   // Total managed logical actors (any state, excluding the golden template) vs the
-  // physical worker pool — the multiplexing/oversubscription story. Most actors sit
+  // physical worker pool: the multiplexing/oversubscription story. Most actors sit
   // suspended in GCS; the running ones share the workers on demand.
   const managedActors = state.actors.filter((a) => !a.name.includes("(golden)")).length;
   const runningActors = state.actors.filter(
@@ -376,14 +376,14 @@ app.post("/api/burst", async (c) => {
     );
     names.push(name);
   }
-  // Fire resume-on-demand at each actor (async — don't block the HTTP response).
+  // Fire resume-on-demand at each actor (async, so it doesn't block the HTTP response).
   // atenet routes <actor>.<atespace>.actors.resources.substrate.ate.dev to a worker.
   for (const name of names) {
     const url = `http://${name}.${atespace}.actors.resources.substrate.ate.dev/healthz`;
     fetch(url, { signal: AbortSignal.timeout(120000) }).catch(() => {});
   }
   state.stats.totalMessages += count;
-  addEvent("substrate", `Burst: fired ${count} tasks — actors now multiplexing onto the worker pool`);
+  addEvent("substrate", `Burst: fired ${count} tasks, actors now multiplexing onto the worker pool`);
   return c.json({ ok: true, count, actors: names });
 });
 
@@ -494,7 +494,7 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 <div class="row row-1">
   <div class="card">
     <h2 style="border-left-color:var(--yellow)">Operational Efficiency</h2>
-    <div class="desc">Multiplexing many suspendable actors onto a small worker pool — vs an always-on pod per instance</div>
+    <div class="desc">Multiplexing many suspendable actors onto a small worker pool, vs an always-on pod per instance</div>
     <div class="row row-3" style="margin-bottom:0">
       <div class="stat-card" style="padding:10px">
         <div class="stat-label">Oversubscription Ratio</div>
@@ -524,7 +524,7 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 <div class="row row-1">
   <div class="card">
     <h2 style="border-left-color:var(--cyan)">Architecture Flow</h2>
-    <div class="desc">Live request path — messages flow left-to-right through the split architecture</div>
+    <div class="desc">Live request path: messages flow left-to-right through the split architecture</div>
     <div class="flow">
       <div class="flow-node"><b>WhatsApp</b><br><span style="color:var(--muted)">User message</span></div>
       <div class="flow-arrow">→</div>
@@ -542,20 +542,20 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 <div class="row row-2-wide">
   <div class="card">
     <h2>Event Stream</h2>
-    <div class="desc">Real-time orchestration events — actor lifecycle, WhatsApp messages, and system operations</div>
+    <div class="desc">Real-time orchestration events: actor lifecycle, WhatsApp messages, and system operations</div>
     <div id="shell" class="shell"></div>
   </div>
   <div class="card" id="wa-card">
     <h2 style="border-left-color:var(--green)">WhatsApp Gateway</h2>
-    <div class="desc">Presence layer — always-on, never suspended</div>
+    <div class="desc">Presence layer: always-on, never suspended</div>
     <div style="display:flex;align-items:center;gap:10px;margin:10px 0 16px">
       <span id="wa-dot" style="width:15px;height:15px;border-radius:50%;background:var(--muted);display:inline-block"></span>
       <span id="wa-state" style="font-size:24px;font-weight:800;color:var(--muted)">Checking…</span>
     </div>
     <div class="wa-row"><span>Channel</span><b>WhatsApp · persistent WebSocket</b></div>
-    <div class="wa-row"><span>Linked number</span><b id="wa-number">—</b></div>
-    <div class="wa-row"><span>Gateway process</span><b id="wa-gw">—</b></div>
-    <div class="wa-row"><span>Last inbound</span><b id="wa-last">—</b></div>
+    <div class="wa-row"><span>Linked number</span><b id="wa-number">-</b></div>
+    <div class="wa-row"><span>Gateway process</span><b id="wa-gw">-</b></div>
+    <div class="wa-row"><span>Last inbound</span><b id="wa-last">-</b></div>
     <div class="wa-row" style="border:none"><span>Messages processed</span><b id="wa-count">0</b></div>
   </div>
 </div>
@@ -568,12 +568,12 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
   </div>
   <div class="card">
     <h2>Worker Pod Map</h2>
-    <div class="desc">Physical Kubernetes pods — shows which actor is landed on each</div>
+    <div class="desc">Physical Kubernetes pods: shows which actor is landed on each</div>
     <div id="pods"></div>
   </div>
   <div class="card">
     <h2 style="border-left-color:var(--pink)">Logical Actor Fleet</h2>
-    <div class="desc">Actors managed by Substrate — suspended in GCS snapshots until needed</div>
+    <div class="desc">Actors managed by Substrate, suspended in GCS snapshots until needed</div>
     <div id="actors"></div>
   </div>
 </div>
@@ -581,7 +581,7 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 <div class="row row-1">
   <div class="card">
     <h2 style="border-left-color:var(--cyan)">Agent Task Timeline</h2>
-    <div class="desc">Per-actor lifecycle — resume-on-demand → serving → suspend, newest first</div>
+    <div class="desc">Per-actor lifecycle: resume-on-demand → serving → suspend, newest first</div>
     <div id="timeline" style="max-height:260px;overflow-y:auto"></div>
   </div>
 </div>
@@ -630,7 +630,7 @@ async function refresh(){
     el("wa-number").textContent=d.whatsapp.number||"not linked";
     el("wa-gw").textContent=d.gatewayHealth.ok?"LIVE (always-on)":"down";
     el("wa-gw").style.color=d.gatewayHealth.ok?"var(--green)":"var(--red)";
-    el("wa-last").textContent=d.whatsapp.lastInbound||"—";
+    el("wa-last").textContent=d.whatsapp.lastInbound||"-";
     el("wa-count").textContent=d.stats.totalMessages;
 
     // Cycles + Messages
@@ -645,7 +645,7 @@ async function refresh(){
       el("eff-latency").textContent=d.stats.swapLatencySec+"s";
       el("eff-latency-sub").textContent="last · avg "+d.stats.avgSwapLatencySec+"s over "+d.stats.swapSamples;
     }else{
-      el("eff-latency").textContent="—";
+      el("eff-latency").textContent="-";
       el("eff-latency-sub").textContent="awaiting a resume";
     }
     el("eff-savings").textContent=d.stats.savings+"%";
@@ -708,7 +708,7 @@ async function refresh(){
         +'<b style="color:'+nc+'">'+escHtml(t.actor)+'</b>'
         +'<span class="tl-detail">'+escHtml(t.detail||"")+'</span>'
         +'</div>';
-    }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No agent tasks yet — click Burst or send a WhatsApp message</div>';
+    }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No agent tasks yet. Click Burst or send a WhatsApp message</div>';
 
   }catch(e){}
 }
@@ -791,7 +791,7 @@ async function burst(n){
   try{
     const r=await fetch("/api/burst",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({count:n})});
     const d=await r.json();
-    if(s)s.textContent=d.ok?("launched "+d.count+" actors — watch the ratio climb"):("error: "+(d.error||"failed"));
+    if(s)s.textContent=d.ok?("launched "+d.count+" actors, watch the ratio climb"):("error: "+(d.error||"failed"));
   }catch(e){ if(s)s.textContent="error: "+e.message; }
   finally{ setTimeout(()=>{document.querySelectorAll(".burst-btn").forEach(b=>b.disabled=false);if(s)setTimeout(()=>s.textContent="",6000);},1500); refresh(); }
 }

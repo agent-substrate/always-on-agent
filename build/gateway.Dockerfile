@@ -1,6 +1,6 @@
 # Gateway image = stock OpenClaw (slim) + the compiled substrate plugin + kubectl-ate.
 #
-# OpenClaw's plugin installer requires compiled JS (dist/index.js) — TypeScript
+# OpenClaw's plugin installer requires compiled JS (dist/index.js). TypeScript
 # source is only honored for local dev checkouts, not installed plugins. So we
 # transpile the plugin with esbuild, vendor its runtime deps, and copy the proto
 # next to the compiled client (which resolves it via import.meta.url).

@@ -1,4 +1,4 @@
-# @openclaw/substrate — Agent Substrate plugin
+# @openclaw/substrate: Agent Substrate plugin
 
 Run OpenClaw split across an **always-on gateway** (presence: channels + routing)
 and a **suspendable Substrate actor** (cognition: LLM, tools, memory). The gateway

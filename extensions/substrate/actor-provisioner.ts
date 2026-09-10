@@ -18,7 +18,7 @@
  * does not already exist, then caches success so subsequent turns are free.
  * Concurrent first-messages for the same new conversation are collapsed with a
  * singleflight map, and an AlreadyExists error (another turn/replica won the
- * race) is treated as success — so CreateActor is effectively idempotent.
+ * race) is treated as success, so CreateActor is effectively idempotent.
  */
 import {
   AteApiClient,

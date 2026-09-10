@@ -176,10 +176,12 @@ cd always-on-agent/demo
 ./deploy-demo.sh
 ```
 
-`deploy-demo.sh` is idempotent and, on first run, **builds both images with Cloud
-Build** (`gcr.io/$PROJECT_ID/openclaw-{gateway,actor}:demo`), pins them by digest
-(snapshots require `@sha256`-pinned images), then applies the WorkerPool,
-ActorTemplate, gateway, and one demo actor. Force a rebuild with `BUILD_IMAGES=true`.
+`deploy-demo.sh` is idempotent and, on first run, **builds the images with Cloud
+Build** (`gcr.io/$PROJECT_ID/openclaw-{gateway,actor,dashboard}:demo`), pins them
+by digest (snapshots require `@sha256`-pinned images), then applies the
+WorkerPool, ActorTemplate, gateway, dashboard, and one demo actor. Force a
+rebuild with `BUILD_IMAGES=true`, and skip the dashboard with
+`DEPLOY_DASHBOARD=false`.
 
 > Both images build from the **public** `ghcr.io/openclaw/openclaw` release plus
 > the plugin source vendored in this repo at `../extensions/substrate/`, so no
@@ -226,6 +228,24 @@ next message, with the conversation preserved across the checkpoint. The idle
 window the gateway uses is `plugins.entries.substrate.config.idleTimeoutSeconds`
 in [`openclaw-demo-config.yaml`](openclaw-demo-config.yaml).
 
+### The dashboard
+
+`deploy-demo.sh` also brings up a read-only dashboard behind a LoadBalancer,
+which is easier to watch than `kubectl ate get actors` and is what the recording
+uses. It shows the request path, the actor lifecycle as a timeline, which worker
+pod each actor is currently landed on, and the ratio of actors to worker pods.
+"Burst" fires a task at every actor at once, so you can watch them multiplex
+onto the pool.
+
+```bash
+kubectl -n openclaw get svc openclaw-dashboard   # wait for EXTERNAL-IP, then open :8090
+```
+
+It reads the cluster and nothing else; it cannot change anything, and the demo
+runs fine without it (`DEPLOY_DASHBOARD=false`). It builds from
+[`dashboard/`](dashboard/) and takes its `kubectl-ate` from the gateway image, so
+the CLI it uses matches the pinned control plane.
+
 Three things to know before you time it:
 
 - The **first** resume on a worker node that has never run a sandbox is slow
@@ -250,6 +270,7 @@ right) will be linked here._ <!-- TODO: link a GitHub Release asset or external 
 ```bash
 kubectl ate delete actor oc-agent --atespace openclaw-demo
 kubectl delete namespace openclaw
+kubectl delete clusterrole,clusterrolebinding openclaw-dashboard
 ```
 
 ## How it maps to the manifests
@@ -262,3 +283,4 @@ kubectl delete namespace openclaw
 | [`openclaw-demo-config.yaml`](openclaw-demo-config.yaml) | gateway `openclaw.json` (substrate plugin as **gateway**, WhatsApp binding) |
 | [`../build/actor/openclaw.json`](../build/actor/openclaw.json) | actor `openclaw.json`, which enables the OpenAI-compatible HTTP endpoint and trusts atenet's link-local proxy address. Baked into the actor image; ActorTemplate volumes cannot mount a ConfigMap. The substrate plugin is **not** installed in the actor image (see the note at the top) |
 | [`openclaw-demo-secrets.yaml`](openclaw-demo-secrets.yaml) | Secret template (the script creates these directly) |
+| [`dashboard/`](dashboard/) | Read-only lifecycle dashboard: image, RBAC, Deployment + LoadBalancer |

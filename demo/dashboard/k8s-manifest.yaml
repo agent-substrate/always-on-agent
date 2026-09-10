@@ -68,8 +68,7 @@ spec:
       serviceAccountName: openclaw-dashboard
       containers:
         - name: dashboard
-          image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-dashboard@sha256:392fddeb91ecb0c716d7ae7ee33fd70c37fabde6565258f31864c6bd593241d5
-          imagePullPolicy: Always
+          image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-dashboard@REPLACE_WITH_DASHBOARD_DIGEST
           ports:
             - containerPort: 8090
               name: http
@@ -99,14 +98,13 @@ spec:
         - name: kubectl-ate
           emptyDir: {}
       initContainers:
+        # Copy kubectl-ate out of the gateway image rather than building it
+        # here. The gateway already carries one built from the pinned Substrate
+        # commit, and a second build from a floating clone would drift away from
+        # the control plane and fail with opaque gRPC errors, not version ones.
         - name: fetch-kubectl-ate
-          image: golang:1.26-bookworm
-          command: ["sh", "-c"]
-          args:
-            - |
-              apt-get update && apt-get install -y git
-              git clone --depth=1 https://github.com/agent-substrate/substrate.git /tmp/substrate
-              cd /tmp/substrate && go build -o /opt/bin/kubectl-ate ./cmd/kubectl-ate
+          image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway@REPLACE_WITH_GATEWAY_DIGEST
+          command: ["cp", "/usr/local/bin/kubectl-ate", "/opt/bin/kubectl-ate"]
           volumeMounts:
             - name: kubectl-ate
               mountPath: /opt/bin

@@ -34,8 +34,10 @@ NAMESPACE="openclaw"
 ATESPACE="openclaw-demo"
 ACTOR_NAME="oc-agent"
 TEMPLATE="openclaw-agent"                           # ActorTemplate name; lives in ATESPACE, not in a k8s namespace
+DEPLOY_DASHBOARD="${DEPLOY_DASHBOARD:-true}"       # the live lifecycle dashboard (LoadBalancer)
 GATEWAY_IMAGE="gcr.io/${PROJECT_ID}/openclaw-gateway"
 ACTOR_IMAGE="gcr.io/${PROJECT_ID}/openclaw-actor"
+DASHBOARD_IMAGE="gcr.io/${PROJECT_ID}/openclaw-dashboard"
 
 echo "=== OpenClaw on Substrate: WhatsApp Demo ==="
 echo ""
@@ -87,6 +89,11 @@ if [ "$BUILD_IMAGES" = "true" ] || { [ "$BUILD_IMAGES" = "auto" ] && ! image_exi
   ( cd "$PARENT_DIR" && \
     sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
     gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-actor.yaml . )
+  if [ "$DEPLOY_DASHBOARD" = "true" ]; then
+    ( cd "$PARENT_DIR" && \
+      sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-dashboard.yaml >/tmp/cb-dash.yaml && \
+      gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-dash.yaml . )
+  fi
 else
   echo "[1/8] Skipping build (images present; set BUILD_IMAGES=true to force)."
 fi
@@ -102,6 +109,11 @@ GATEWAY_DIGEST="$(digest_of "$GATEWAY_IMAGE")"
 ACTOR_DIGEST="$(digest_of "$ACTOR_IMAGE")"
 echo "    gateway @ ${GATEWAY_DIGEST}"
 echo "    actor   @ ${ACTOR_DIGEST}"
+DASHBOARD_DIGEST=""
+if [ "$DEPLOY_DASHBOARD" = "true" ]; then
+  DASHBOARD_DIGEST="$(digest_of "$DASHBOARD_IMAGE")"
+  echo "    dash    @ ${DASHBOARD_DIGEST}"
+fi
 
 # The worker pods' ateom must be built from the SAME Substrate commit the control
 # plane was installed from. ateom speaks internal protos to atelet/ateapi, and a
@@ -124,6 +136,7 @@ render() {
       -e "s|REPLACE_WITH_ACTOR_DIGEST|$ACTOR_DIGEST|g" \
       -e "s|REPLACE_WITH_GEMINI_API_KEY|$GEMINI_API_KEY|g" \
       -e "s|REPLACE_WITH_GATEWAY_TOKEN|$GATEWAY_TOKEN|g" \
+      -e "s|REPLACE_WITH_DASHBOARD_DIGEST|$DASHBOARD_DIGEST|g" \
       -e "s|REPLACE_WITH_ATEOM_IMAGE|$ATEOM_IMAGE|g" "$1"
 }
 
@@ -160,10 +173,20 @@ echo "[5/8] Applying config maps..."
 # but there is still no ConfigMap volume source.
 kubectl apply -f "$SCRIPT_DIR/openclaw-demo-config.yaml"
 
-# --- [6/8] Gateway ---
+# --- [6/8] Gateway (+ dashboard) ---
 echo "[6/8] Deploying gateway..."
 render "$PARENT_DIR/manifests/gateway.yaml" | kubectl apply -f -
 kubectl -n "$NAMESPACE" rollout status deployment/openclaw-gateway --timeout=180s
+
+# The dashboard is read-only and optional: it polls kubectl and kubectl-ate and
+# renders the actor lifecycle. Nothing else depends on it, so a failure here
+# should not take the demo down with it.
+if [ "$DEPLOY_DASHBOARD" = "true" ]; then
+  echo "    Deploying the lifecycle dashboard..."
+  render "$SCRIPT_DIR/dashboard/k8s-manifest.yaml" | kubectl apply -f -
+  kubectl -n "$NAMESPACE" rollout status deployment/openclaw-dashboard --timeout=180s \
+    || echo "    dashboard did not become ready; the demo itself is unaffected."
+fi
 
 # --- [7/8] Golden + actor ---
 echo "[7/8] Waiting for golden snapshot, then creating the demo actor..."
@@ -219,6 +242,17 @@ echo "  5. Watch the lifecycle:"
 echo "       watch kubectl ate get actors -A"
 echo "       kubectl ate logs actor $ACTOR_NAME --atespace $ATESPACE -f"
 echo "     After ~10s idle the actor SUSPENDS; the next message RESUMES it."
+if [ "$DEPLOY_DASHBOARD" = "true" ]; then
+  DASH_IP=$(kubectl -n "$NAMESPACE" get svc openclaw-dashboard \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+  echo ""
+  if [ -n "$DASH_IP" ]; then
+    echo "     Or watch it in the dashboard:  http://${DASH_IP}:8090"
+  else
+    echo "     Or watch it in the dashboard, once its LoadBalancer has an IP:"
+    echo "       kubectl -n $NAMESPACE get svc openclaw-dashboard -w"
+  fi
+fi
 echo ""
 echo "  Cleanup:"
 echo "       kubectl ate delete actor $ACTOR_NAME --atespace $ATESPACE"

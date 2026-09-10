@@ -1,0 +1,131 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Nothing here needs a cluster or a GCP project. These are the checks that catch
+# a broken pull request before anyone spends 20 minutes deploying it.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    name: plugin transpiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # The gateway image transpiles with esbuild and no tsc, so this reproduces
+      # what the build actually does. It catches syntax errors and bad imports;
+      # it does not type-check.
+      - name: esbuild
+        working-directory: extensions/substrate
+        run: |
+          npm install --omit=dev
+          npx --yes esbuild@0.24.2 \
+            index.ts acp-runtime.ts actor-router.ts actor-provisioner.ts \
+            ateapi-client.ts kubectl-ate-client.ts idle-suspender.ts \
+            --format=esm --platform=node --target=node20 --outdir=/tmp/dist
+      # build/gateway.Dockerfile lists the modules to transpile by hand. A new
+      # module that nobody adds to that list is simply absent from the image,
+      # and esbuild will not complain, so check the list covers the directory.
+      - name: every module is in the Dockerfile's esbuild list
+        run: |
+          on_disk=$(cd extensions/substrate && ls *.ts | sort)
+          in_df=$(sed -n '/npx --yes esbuild/,/--outdir=dist/p' build/gateway.Dockerfile \
+                  | grep -oE '[a-z0-9-]+\.ts' | sort -u)
+          missing=$(comm -23 <(echo "$on_disk") <(echo "$in_df"))
+          if [ -n "$missing" ]; then
+            echo "not transpiled into the gateway image:"
+            echo "$missing"
+            exit 1
+          fi
+
+  dashboard:
+    name: dashboard parses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - working-directory: demo/dashboard
+        run: |
+          npm install --omit=dev
+          node --check dashboard.js
+
+  manifests:
+    name: yaml and json parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: parse every yaml and json
+        run: |
+          python3 - <<'PY'
+          import glob, json, sys
+          import yaml
+          bad = []
+          for f in glob.glob('**/*.yaml', recursive=True) + glob.glob('**/*.yml', recursive=True):
+              if 'node_modules' in f: continue
+              try: list(yaml.safe_load_all(open(f)))
+              except Exception as e: bad.append((f, e))
+          for f in glob.glob('**/*.json', recursive=True):
+              if 'node_modules' in f: continue
+              try: json.load(open(f))
+              except Exception as e: bad.append((f, e))
+          for f, e in bad: print(f"{f}: {e}")
+          sys.exit(1 if bad else 0)
+          PY
+      # Every image reference has to be digest-pinned: Substrate refuses to
+      # snapshot a tag-pinned actor, and the gateway and actor drifting apart
+      # breaks the protocol they speak to each other.
+      - name: images are pinned by digest
+        run: |
+          if grep -rnE '^\s*(image|FROM)\s*:?\s+\S+:[a-zA-Z0-9._-]+\s*$' \
+               manifests/ build/*.Dockerfile demo/dashboard/k8s-manifest.yaml \
+             | grep -vE '@sha256:|golang:|node:|gcr\.io/cloud-builders|REPLACE_WITH'; then
+            echo "above image references are not pinned by digest"
+            exit 1
+          fi
+
+  shell:
+    name: shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: |
+          for f in $(git ls-files '*.sh'); do
+            bash -n "$f"
+            shellcheck -S warning "$f"
+          done
+
+  prose:
+    name: no em dashes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if git grep -In $'—' -- . ; then
+            echo "em dashes found; use a comma, a colon or a plain hyphen"
+            exit 1
+          fi

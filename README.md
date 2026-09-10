@@ -9,9 +9,9 @@ once the conversation goes idle, and the next message auto-resumes it on demand.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and tradeoffs (with diagrams).
 
-## Two ways to integrate
+## How it integrates
 
-### 1. Drop-in plugin (recommended): zero edits to existing OpenClaw files
+### A drop-in plugin: zero edits to existing OpenClaw files
 Everything lives in `extensions/substrate/`. Copy it into OpenClaw's `extensions/`
 and enable it in `openclaw.json`. Config is declared in the plugin manifest
 (`openclaw.plugin.json` → `configSchema`) and startup wiring runs through
@@ -26,9 +26,10 @@ cp -r extensions/substrate <openclaw>/extensions/substrate
 
 Then set `plugins.entries.substrate` in config (see `extensions/substrate/README.md`).
 
-### 2. Direct integration (original)
-The same logic wired directly into the build (a new `src/substrate/` module plus
-~30 lines of config/startup plumbing). Kept for reference; the plugin supersedes it.
+The same logic can be wired straight into an OpenClaw build instead, as a
+`src/substrate/` module plus about 30 lines of config and startup plumbing. That
+was the original shape here and the plugin supersedes it, so it is not in this
+repo.
 
 ## Repo layout
 

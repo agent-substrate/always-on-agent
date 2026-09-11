@@ -27,7 +27,13 @@ metadata:
   labels:
     workload: openclaw
 spec:
-  replicas: 2
+  # An ateom hosts exactly one actor at a time (`actorsPerAteom = 1`, a constant
+  # in v0.1.0), so this number is the ceiling on how many actors can be mid-turn
+  # at once, and an actor that arrives with the pool full is rejected 503 rather
+  # than queued. Oversubscription here is over time, not over a worker: the fleet
+  # can hold far more actors than there are workers because almost all of them
+  # are suspended almost all of the time. Five leaves room for the demo's burst.
+  replicas: 5
   # Substituted by deploy-demo.sh, which builds cmd/ateom-gvisor out of your
   # Substrate checkout with ko. It MUST come from the same commit you installed
   # the control plane from: ateom talks to atelet/ateapi over internal protos, and

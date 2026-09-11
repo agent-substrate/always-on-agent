@@ -154,6 +154,13 @@ spec:
               # dependencies needs more memory than the gateway's limit allows,
               # and it is skipped if already present on the PVC.
               node /app/openclaw.mjs plugins install clawhub:@openclaw/whatsapp@2026.8.2 --accept-capabilities || true
+              # A PVC that was written by an older OpenClaw carries a workspace
+              # layout the current one refuses to start against: it exits with
+              # "Legacy workspace setup state requires migration" and the pod
+              # CrashLoopBackOffs with a perfectly good image. Doctor is the
+              # supported migration path, and it is a no-op on an already-current
+              # workspace, so it runs unconditionally on every start.
+              node /app/openclaw.mjs doctor --fix || true
           env:
             - name: HOME
               value: /home/node/state

@@ -26,6 +26,9 @@ const KUBECTL_ATE = process.env.KUBECTL_ATE || "kubectl-ate";
 const ATESPACES = (process.env.ATESPACES || "openclaw-demo").split(",").map(s => s.trim()).filter(Boolean);
 
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || "";
+// Off by default. The WhatsApp panel is visible for the whole recording, so the
+// linked number shows as "linked" unless someone deliberately opts in.
+const SHOW_NUMBER = process.env.SHOW_WHATSAPP_NUMBER === "true";
 
 const state = {
   pods: [],
@@ -51,6 +54,15 @@ const state = {
 const MAX_EVENTS = 200;
 const MAX_MESSAGES = 100;
 
+// `openclaw channels status` boots the gateway CLI to answer, so it costs tens
+// of seconds, not milliseconds. It gets its own slow cadence and its own
+// timeout, well clear of the 2s sync loop.
+const CHANNEL_POLL_MS = 60000;
+const CHANNEL_POLL_TIMEOUT_MS = 45000;
+let lastChannelPoll = 0;
+let channelPollInFlight = false;
+let gatewayPodName = "";
+
 function runCmd(cmd, timeoutMs = 10000) {
   return new Promise((resolve) => {
     exec(cmd, { timeout: timeoutMs }, (error, stdout, stderr) => {
@@ -75,14 +87,88 @@ function addTimeline(actor, event, detail) {
   if (state.timeline.length > 60) state.timeline.pop();
 }
 
-async function syncState() {
+// WhatsApp link state, asked of the gateway rather than inferred from it.
+//
+// /readyz answers a question about the gateway process, not about the channel,
+// and it returns ready on a gateway with no channels configured at all.
+// Deriving "WhatsApp connected" from it put a green light on screen for an
+// account that was never linked, which is the one lie this panel must not tell
+// during a recording. `channels status` is the gateway's own answer and carries
+// per-account linked/connected flags.
+//
+// Deliberately not awaited by the sync loop. The CLI boots the whole gateway
+// app to answer, which takes tens of seconds, and link state doesn't change on
+// the 2s timescale the rest of the dashboard runs at. So it refreshes slowly in
+// the background and the panel shows the last known answer in between.
+async function refreshChannelStatus(now) {
+  if (channelPollInFlight || now - lastChannelPoll < CHANNEL_POLL_MS) return;
+  channelPollInFlight = true;
+  lastChannelPoll = now;
   try {
-    // Golden templates (k8s CRD, ate.dev): shows the golden-snapshot status.
-    const tmplOut = await runCmd(
-      `kubectl get actortemplates.ate.dev -n ${NS} -o json 2>/dev/null || echo '{}'`
+    if (!gatewayPodName) {
+      gatewayPodName = await runCmd(
+        `kubectl -n ${NS} get pods -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}'`
+      );
+    }
+    if (!gatewayPodName) return;
+
+    const raw = await runCmd(
+      `kubectl -n ${NS} exec ${gatewayPodName} -c gateway -- openclaw channels status --json 2>/dev/null`,
+      CHANNEL_POLL_TIMEOUT_MS
     );
+    const j = JSON.parse(raw);
+    // channelAccounts maps a channel id to an array of account snapshots. An
+    // absent whatsapp key means the channel isn't set up at all, which is a
+    // different problem from set up and offline, so the panel says which.
+    const accounts = (j.channelAccounts || {}).whatsapp || [];
+    const acct = accounts.find((a) => a.connected) || accounts[0];
+    const wasStatus = state.whatsapp.status;
+
+    state.whatsapp.connected = acct ? acct.connected === true : false;
+    state.whatsapp.status = !acct
+      ? "not configured"
+      : acct.connected === true
+        ? "connected"
+        : acct.linked === true
+          ? "linked, offline"
+          : "not linked";
+    // The number itself is withheld unless SHOW_WHATSAPP_NUMBER is set: this
+    // panel is on screen for the whole recording, and a real number in one
+    // frame outlives the video.
+    // An unlinked account still has an accountId, so gating only on that put the
+    // word "linked" in the number field of a panel whose status line said "not
+    // linked" directly above it.
+    if (acct && acct.accountId && acct.linked === true) {
+      const number = "+" + String(acct.accountId).split(":")[0].split("@")[0];
+      state.whatsapp.number = SHOW_NUMBER ? number : "linked";
+    } else {
+      state.whatsapp.number = null;
+    }
+    if (acct && acct.lastInboundAt) {
+      state.whatsapp.lastInbound = new Date(acct.lastInboundAt).toISOString().slice(11, 19);
+    }
+    if (state.whatsapp.status !== wasStatus) {
+      addEvent("whatsapp", `WhatsApp ${state.whatsapp.status}`);
+    }
+  } catch {
+    // Leave the last known state rather than flapping the panel on one slow or
+    // failed exec.
+  } finally {
+    channelPollInFlight = false;
+  }
+}
+
+async function syncState() {
+  const now = Date.now();
+  try {
     // Live actors (current OSS actor model: not k8s objects, listed from ateapi
     // per atespace via kubectl-ate).
+    //
+    // There is no golden-template panel because there is nothing to read it
+    // from. ActorTemplate is an ateapi resource in this release, not a k8s CRD,
+    // and kubectl-ate has no `get actortemplates`. The old code queried
+    // actortemplates.ate.dev with `|| echo '{}'`, so the CRD's absence was
+    // swallowed and the panel just stayed empty forever.
     const actorJsons = await Promise.all(
       ATESPACES.map((as) =>
         runCmd(`${KUBECTL_ATE} get actors -a ${as} -o json 2>/dev/null || echo '{}'`)
@@ -93,38 +179,29 @@ async function syncState() {
       15000
     );
 
-    const golden = [];
-    if (tmplOut && tmplOut.trim().startsWith("{")) {
-      try {
-        for (const t of (JSON.parse(tmplOut).items || [])) {
-          golden.push({
-            name: `${t.metadata?.name || "template"} (golden)`,
-            status: (t.status?.phase || "Ready").toUpperCase(),
-            ip: "n/a",
-            pod: "n/a",
-            worker: `snapshot: ${t.status?.phase === "Ready" ? "ready" : "building"}`,
-          });
-        }
-      } catch {}
-    }
-
     const liveActors = [];
     for (const raw of actorJsons) {
       if (!raw || !raw.trim().startsWith("{")) continue;
       try {
         for (const a of (JSON.parse(raw).actors || [])) {
+          // status is an object, and the state enum is ACTOR_STATE_*. Where the
+          // actor is running lives under status.workerAssignment, and that key
+          // is absent entirely while the actor is suspended, which is the
+          // normal resting state rather than an error.
+          const st = a.status || {};
+          const wa = st.workerAssignment || {};
           liveActors.push({
             name: `${a.metadata?.name} @${a.metadata?.atespace}`,
-            status: String(a.status || "").replace(/^STATUS_/, "") || "UNKNOWN",
-            ip: a.ateomPodIp || "n/a",
-            pod: a.ateomPodName || "-",
-            worker: a.workerPoolName || "n/a",
+            status: String(st.state || "").replace(/^ACTOR_STATE_/, "") || "UNKNOWN",
+            ip: wa.workerPodIp || "n/a",
+            pod: wa.workerPod || "-",
+            worker: wa.workerPool || "n/a",
           });
         }
       } catch {}
     }
 
-    state.actors = [...liveActors, ...golden];
+    state.actors = liveActors;
 
     // Track status transitions → resume/suspend counts + worker-swap latency
     // (time from restore-on-demand start to the actor serving = RESUMING→RUNNING).
@@ -187,16 +264,6 @@ async function syncState() {
         const readyData = await readyRes.json();
         state.gatewayHealth.ready = readyData.ready === true;
         state.gatewayHealth.channels = readyData;
-        if (readyData.ready === true) {
-          if (state.whatsapp.status !== "connected") {
-            state.whatsapp.status = "connected";
-            addEvent("whatsapp", "WhatsApp connected and ready!");
-          }
-        } else if (state.whatsapp.status === "connected") {
-          // connection dropped; reflect it live instead of latching "connected"
-          state.whatsapp.status = "disconnected";
-          addEvent("whatsapp", "WhatsApp connection lost, not ready");
-        }
       } catch {
         state.gatewayHealth.ready = readyRes.ok;
       }
@@ -204,20 +271,8 @@ async function syncState() {
       state.gatewayHealth.ok = false;
       state.gatewayHealth.ready = false;
     }
-    state.whatsapp.connected = state.gatewayHealth.ready === true;
 
-    // Linked phone number, read from creds once (or retry while unknown)
-    if (!state.whatsapp.number) {
-      try {
-        const gp = await runCmd(`kubectl -n ${NS} get pods -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}'`);
-        if (gp) {
-          const creds = await runCmd(`kubectl -n ${NS} exec ${gp} -c gateway -- cat /home/node/.openclaw/whatsapp/default/creds.json 2>/dev/null`);
-          const j = JSON.parse(creds);
-          const id = j && j.me && j.me.id;
-          if (id && j.registered === true) state.whatsapp.number = "+" + id.split(":")[0].split("@")[0];
-        }
-      } catch {}
-    }
+    refreshChannelStatus(now);
 
     // Fetch messages from gateway session history API
     try {
@@ -250,7 +305,6 @@ async function syncState() {
       }
     } catch {}
 
-    const now = Date.now();
     const elapsed = (now - state.stats.lastSync) / 1000;
     state.stats.lastSync = now;
     const runningActors = state.actors.filter(
@@ -275,19 +329,24 @@ app.post("/api/whatsapp/connect", async (c) => {
       return c.json({ ok: false, error: "Gateway pod not found" });
     }
 
-    // Safety guard: never wipe a live session (a stray click was what unpaired it before)
-    try {
-      const r = await fetch(`${GATEWAY_URL}/readyz`, { signal: AbortSignal.timeout(2000) });
-      const rd = await r.json();
-      if (rd.ready === true) {
-        return c.json({ ok: false, error: "WhatsApp is already connected, refusing to reset. Only use this when disconnected." });
-      }
-    } catch {}
+    // Safety guard: never wipe a live session (a stray click was what unpaired
+    // it before). This used to guard on /readyz, which reports gateway process
+    // health and says ready even with no channel configured, so it refused
+    // every click including the legitimate ones. Guard on the link state the
+    // gateway actually reports instead.
+    if (state.whatsapp.connected === true) {
+      return c.json({ ok: false, error: "WhatsApp is already connected, refusing to reset. Only use this when disconnected." });
+    }
 
-    // Clear old auth and start long-running pairing process in background
-    await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- rm -rf /home/node/.openclaw/whatsapp/default`);
-    await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- rm -f /tmp/whatsapp-qr.txt`);
-    await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- sh -c 'cd /app && timeout 180 node pair-qr.cjs > /tmp/pair-log.txt 2>&1 &'`);
+    // Hand pairing to the supported CLI path. The old code shelled out to
+    // /app/pair-qr.cjs, a script that does not exist in the gateway image, and
+    // to a Baileys creds directory the current OpenClaw doesn't use, so the
+    // button reported success and nothing happened.
+    await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- rm -f /tmp/whatsapp-qr.txt /tmp/pair-log.txt`);
+    await runCmd(
+      `kubectl -n ${NS} exec ${gatewayPod} -c gateway -- sh -c ` +
+      `'nohup timeout 180 openclaw channels login --channel whatsapp > /tmp/pair-log.txt 2>&1 &'`
+    );
 
     addEvent("whatsapp", "Pairing process started (3 min window)");
     state.whatsapp.status = "pairing";
@@ -305,16 +364,25 @@ app.get("/api/whatsapp/qr", async (c) => {
     );
     if (!gatewayPod) return c.json({ status: "no_gateway" });
 
-    const qrRaw = await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- cat /tmp/whatsapp-qr.txt 2>/dev/null`);
+    // Read the login CLI's own output. There is no whatsapp-qr.txt: that file
+    // was written by a pairing script that isn't in the image, so this endpoint
+    // used to answer "waiting" forever.
+    //
+    // The pairing payload is the ref string WhatsApp encodes in the QR, which
+    // Baileys emits with a `2@` prefix. If it hasn't appeared yet, hand back the
+    // log tail rather than a bare "waiting", so an operator staring at a stuck
+    // pairing can see what the gateway is actually saying.
+    const log = await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- tail -c 4000 /tmp/pair-log.txt 2>/dev/null`);
+    if (!log) return c.json({ status: "waiting" });
 
-    if (!qrRaw) return c.json({ status: "waiting" });
-    if (qrRaw === "CONNECTED") {
-      state.whatsapp.status = "connected";
-      addEvent("whatsapp", "WhatsApp linked successfully!");
+    if (state.whatsapp.connected === true) {
       return c.json({ status: "connected" });
     }
 
-    return c.json({ status: "qr_ready", qrData: qrRaw });
+    const ref = log.match(/2@[A-Za-z0-9+/=_-]{20,}/g);
+    if (ref) return c.json({ status: "qr_ready", qrData: ref[ref.length - 1] });
+
+    return c.json({ status: "pairing", log: log.slice(-1500) });
   } catch {
     return c.json({ status: "error" });
   }
@@ -368,10 +436,21 @@ app.post("/api/burst", async (c) => {
   addEvent("substrate", `Burst: launching ${count} agent tasks across ${count} actors…`);
   const names = [];
   for (let i = 1; i <= count; i++) {
-    const name = `oc-burst-${i}`;
+    // Named as part of the fleet rather than oc-burst-N, so a pre-created fleet
+    // is reused instead of grown: the create below is idempotent, so bursting
+    // wakes actors that were already sitting there suspended. It also keeps the
+    // fleet panel readable on camera, where "oc-burst-3" looks like scaffolding.
+    const name = `oc-agent-${i}`;
     // Idempotent: create the actor from the golden template if it doesn't exist.
+    //
+    // The flag is --template-ref, and it resolves the name inside --atespace, so
+    // it takes a bare name. This used to pass `--template openclaw/openclaw-agent`
+    // -- a flag the CLI doesn't have, and a namespace-qualified reference it would
+    // reject anyway -- with the error swallowed by `|| true`. Burst then fired
+    // HTTP requests at actors that had never been created, and the pod map stayed
+    // empty while the button reported success.
     await runCmd(
-      `${KUBECTL_ATE} create actor ${name} -a ${atespace} --template ${NS}/openclaw-agent 2>/dev/null || true`,
+      `${KUBECTL_ATE} create actor ${name} -a ${atespace} --template-ref openclaw-agent 2>/dev/null || true`,
       15000
     );
     names.push(name);
@@ -380,7 +459,21 @@ app.post("/api/burst", async (c) => {
   // atenet routes <actor>.<atespace>.actors.resources.substrate.ate.dev to a worker.
   for (const name of names) {
     const url = `http://${name}.${atespace}.actors.resources.substrate.ate.dev/healthz`;
-    fetch(url, { signal: AbortSignal.timeout(120000) }).catch(() => {});
+    fetch(url, { signal: AbortSignal.timeout(120000) })
+      .then((r) => {
+        // An ateom hosts one actor at a time, so a burst wider than the worker
+        // pool gets the excess refused with a 503 rather than queued. A resolved
+        // response isn't a thrown error, so this used to vanish into the .catch()
+        // and the actor just sat SUSPENDED while the timeline claimed a task had
+        // been fired at it.
+        if (!r.ok) {
+          addEvent(
+            "substrate",
+            `${name}: no worker free (HTTP ${r.status}); pool is ${state.pods.length} ateoms, one actor each`
+          );
+        }
+      })
+      .catch(() => {});
   }
   state.stats.totalMessages += count;
   addEvent("substrate", `Burst: fired ${count} tasks, actors now multiplexing onto the worker pool`);
@@ -445,6 +538,12 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .flow-node.ate{border-color:var(--cyan)}
 .flow-node.actor{border-color:var(--pink)}
 .flow-arrow{color:var(--muted);font-size:20px}
+/* A hop that isn't carrying anything right now goes grey. The gateway node
+   never dims, which is the whole point of the picture: the right-hand half of
+   the path disappears on suspend and the left-hand half doesn't. */
+.flow-node,.flow-arrow{transition:opacity 0.4s,filter 0.4s}
+.flow-node.dim{opacity:0.3;filter:grayscale(1)}
+.flow-arrow.dim{opacity:0.2}
 .msg{padding:8px 12px;margin-bottom:6px;border-radius:4px;font-size:12px}
 .msg.inbound{background:var(--panel-2);border:1px solid var(--line);margin-right:20%}
 .msg.outbound{background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.2);margin-left:20%;text-align:right}
@@ -460,9 +559,33 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .burst-btn:hover{opacity:0.85}
 .burst-btn:disabled{opacity:0.4;cursor:not-allowed}
 @media(max-width:900px){.row-4{grid-template-columns:repeat(2,1fr)}.row-2,.row-2-wide,.row-3{grid-template-columns:1fr}}
+
+/* Recording layout: ?layout=demo.
+   The operator view is nine panels tall and has to be scrolled, which is fine
+   at a desk and useless on camera, where the dashboard shares the screen with
+   WhatsApp Web and a terminal. This drops it to what the video argues with and
+   fits the rest in one column with no scrolling. */
+body.demo{padding:14px}
+body.demo header{margin-bottom:12px}
+body.demo header h1{font-size:18px}
+body.demo .demo-hide{display:none}
+body.demo .row{gap:12px;margin-bottom:12px}
+body.demo .row-3{grid-template-columns:repeat(2,1fr)}
+body.demo .card{padding:12px}
+body.demo .card .desc{display:none}
+body.demo .stat-card{padding:10px}
+body.demo .stat-val{font-size:24px}
+body.demo .flow{gap:10px;padding:6px 0}
+body.demo .flow-node{min-width:106px;padding:8px 12px}
+body.demo #pods,body.demo #actors{max-height:230px;overflow-y:auto}
+body.demo #timeline{max-height:210px}
 </style>
 </head>
 <body>
+<script>
+// Set before first paint so the recording layout doesn't flash the full one.
+if(new URLSearchParams(location.search).get("layout")==="demo")document.body.className="demo";
+</script>
 <header>
   <h1>OpenClaw on Substrate<span>Split Architecture Demo</span></h1>
   <div id="sync" style="font-size:11px;color:var(--muted)">Connecting...</div>
@@ -506,7 +629,10 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
         <div class="stat-val" id="eff-latency" style="color:var(--green);font-size:24px">--</div>
         <div class="stat-label" id="eff-latency-sub">snapshot → serving</div>
       </div>
-      <div class="stat-card" style="padding:10px">
+      <!-- A derived number presented as a measurement, and the same fact as the
+           oversubscription ratio next to it in a form that is harder to defend.
+           Kept for the operator view, out of the recording. -->
+      <div class="stat-card demo-hide" style="padding:10px">
         <div class="stat-label">Economic Savings</div>
         <div class="stat-val" id="eff-savings" style="color:var(--yellow);font-size:24px">--</div>
         <div class="stat-label" id="eff-savings-sub">vs always-on pods</div>
@@ -529,17 +655,19 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
       <div class="flow-node"><b>WhatsApp</b><br><span style="color:var(--muted)">User message</span></div>
       <div class="flow-arrow">→</div>
       <div class="flow-node gw" id="flow-gw"><b>Gateway</b><br><span style="color:var(--green)">Always-on</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-node ate"><b>atenet</b><br><span style="color:var(--cyan)">Resume-on-demand</span></div>
-      <div class="flow-arrow">→</div>
+      <div class="flow-arrow" id="flow-a2">→</div>
+      <div class="flow-node ate" id="flow-ate"><b>atenet</b><br><span style="color:var(--cyan)">Resume-on-demand</span></div>
+      <div class="flow-arrow" id="flow-a3">→</div>
       <div class="flow-node actor" id="flow-actor"><b>Agent Actor</b><br><span id="flow-actor-status" style="color:var(--muted)">--</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-node"><b>Gemini API</b><br><span style="color:var(--muted)">LLM response</span></div>
+      <div class="flow-arrow" id="flow-a4">→</div>
+      <div class="flow-node" id="flow-llm"><b>Gemini API</b><br><span style="color:var(--muted)">LLM response</span></div>
     </div>
   </div>
 </div>
 
-<div class="row row-2-wide">
+<!-- Both of these are replaced on camera by the real thing: WhatsApp Web is on
+     screen next to the dashboard, and the terminal carries the event log. -->
+<div class="row row-2-wide demo-hide">
   <div class="card">
     <h2>Event Stream</h2>
     <div class="desc">Real-time orchestration events: actor lifecycle, WhatsApp messages, and system operations</div>
@@ -561,7 +689,7 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 </div>
 
 <div class="row row-3">
-  <div class="card">
+  <div class="card demo-hide">
     <h2 style="border-left-color:var(--pink)">WhatsApp Messages</h2>
     <div class="desc">Conversation flow between user and the Substrate-backed agent</div>
     <div id="messages" style="height:240px;overflow-y:auto;padding:8px"></div>
@@ -612,6 +740,14 @@ async function refresh(){
       el("flow-actor-status").textContent=actor.status;
       el("flow-actor-status").style.color=colors[actor.status]||"var(--muted)";
       el("flow-actor").style.borderColor=colors[actor.status]||"var(--line)";
+
+      // Light the hops that are actually carrying the request. On suspend the
+      // right-hand half of the path greys out and the gateway stays lit, which
+      // is the design the video is trying to teach.
+      const live=actor.status==="RUNNING"||actor.status==="RESUMING";
+      for(const id of ["flow-a2","flow-ate","flow-a3","flow-actor","flow-a4","flow-llm"]){
+        el(id).classList.toggle("dim",!live);
+      }
     }
 
     // Gateway status
@@ -755,6 +891,11 @@ async function pollQR(){
       img.innerHTML="";img.appendChild(canvas);
       st.innerHTML="Scan with WhatsApp<br><b>Settings → Linked Devices → Link a Device</b><br><small style='color:var(--muted)'>QR refreshes automatically every ~20s</small>";
       btn.textContent="Restart";btn.disabled=false;
+    }else if(data.status==="pairing"){
+      // No QR payload yet. Show what the gateway is saying instead of a spinner
+      // that hides an error.
+      const tail=(data.log||"").trim().split("\n").slice(-3).join("\n");
+      st.innerHTML="Pairing...<pre style='text-align:left;font-size:10px;color:var(--muted);white-space:pre-wrap;margin-top:6px'>"+escHtml(tail)+"</pre>";
     }else if(data.status==="waiting"){
       st.textContent="Waiting for QR code...";
     }

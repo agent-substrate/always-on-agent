@@ -241,10 +241,18 @@ onto the pool.
 kubectl -n openclaw get svc openclaw-dashboard   # wait for EXTERNAL-IP, then open :8090
 ```
 
-It reads the cluster and nothing else; it cannot change anything, and the demo
-runs fine without it (`DEPLOY_DASHBOARD=false`). It builds from
-[`dashboard/`](dashboard/) and takes its `kubectl-ate` from the gateway image, so
-the CLI it uses matches the pinned control plane.
+It reads the cluster, and it execs into the gateway pod for WhatsApp link state.
+The demo runs fine without it (`DEPLOY_DASHBOARD=false`). It builds from
+[`dashboard/`](dashboard/) and builds its own `kubectl-ate` from the pinned
+Substrate commit, so the CLI it uses matches the control plane. It used to copy
+that binary out of the gateway image instead, which sounds equivalent and isn't:
+the gateway image carried a build old enough to predate `--authentication-config`,
+so it sent no bearer token and the dashboard showed an empty actor list while
+every pod stayed green.
+
+Add `?layout=demo` to the URL for the recording layout: same data, four rows
+instead of nine, and the operator-only panels hidden so it fits beside WhatsApp
+Web at 1080p.
 
 Three things to know before you time it:
 

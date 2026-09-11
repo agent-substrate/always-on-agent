@@ -33,8 +33,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list"]
+  # actortemplates is deliberately absent: it is an ateapi resource in this
+  # release, not a CRD in this group.
   - apiGroups: ["ate.dev"]
-    resources: ["workerpools", "actortemplates"]
+    resources: ["workerpools"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -48,6 +50,70 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: openclaw-dashboard
+  apiGroup: rbac.authorization.k8s.io
+---
+# The WhatsApp panel and the pairing button both work by exec'ing into the
+# gateway container: the link state is read out of Baileys' creds.json, and
+# pairing clears that file and re-reads the QR. Without this the panel reports
+# "not linked" for an account that is in fact connected, which is the worst
+# possible thing to have on screen during a recording.
+#
+# Namespaced to openclaw rather than added to the ClusterRole, because exec is
+# the one verb here that can change something.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openclaw-dashboard-gateway-exec
+  namespace: openclaw
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openclaw-dashboard-gateway-exec
+  namespace: openclaw
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-dashboard
+    namespace: openclaw
+roleRef:
+  kind: Role
+  name: openclaw-dashboard-gateway-exec
+  apiGroup: rbac.authorization.k8s.io
+---
+# kubectl-ate does not present the pod's own ServiceAccount token to ateapi. It
+# mints one by issuing a TokenRequest against ate-system/ate-client, so without
+# this the dashboard authenticates as nobody and every actor call comes back
+# "missing bearer token" while the pod itself looks perfectly healthy.
+#
+# Scoped as a namespaced Role naming that one ServiceAccount, rather than a
+# cluster-wide power to mint tokens for any identity.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openclaw-dashboard-mint-ate-token
+  namespace: ate-system
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["ate-client"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openclaw-dashboard-mint-ate-token
+  namespace: ate-system
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-dashboard
+    namespace: openclaw
+roleRef:
+  kind: Role
+  name: openclaw-dashboard-mint-ate-token
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
@@ -80,7 +146,7 @@ spec:
             - name: GATEWAY_URL
               value: "http://openclaw-gateway.openclaw.svc.cluster.local:18789"
             - name: KUBECTL_ATE
-              value: "/opt/bin/kubectl-ate"
+              value: "/usr/local/bin/kubectl-ate"
             # Atespace(s) the demo actors live in (current OSS actor model).
             - name: ATESPACES
               value: "openclaw-demo"
@@ -91,23 +157,6 @@ spec:
             limits:
               memory: 128Mi
               cpu: 100m
-          volumeMounts:
-            - name: kubectl-ate
-              mountPath: /opt/bin
-      volumes:
-        - name: kubectl-ate
-          emptyDir: {}
-      initContainers:
-        # Copy kubectl-ate out of the gateway image rather than building it
-        # here. The gateway already carries one built from the pinned Substrate
-        # commit, and a second build from a floating clone would drift away from
-        # the control plane and fail with opaque gRPC errors, not version ones.
-        - name: fetch-kubectl-ate
-          image: gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway@REPLACE_WITH_GATEWAY_DIGEST
-          command: ["cp", "/usr/local/bin/kubectl-ate", "/opt/bin/kubectl-ate"]
-          volumeMounts:
-            - name: kubectl-ate
-              mountPath: /opt/bin
 ---
 apiVersion: v1
 kind: Service

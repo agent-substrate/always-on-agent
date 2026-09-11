@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 steps:
+  # Catch a syntax error here rather than in a CrashLoopBackOff. The image has
+  # no test suite and the server is a single file, so this is the whole check.
+  - name: node:24-bookworm-slim
+    entrypoint: node
+    args: ["--check", "demo/dashboard/dashboard.js"]
   - name: gcr.io/cloud-builders/docker
     args:
       - "build"

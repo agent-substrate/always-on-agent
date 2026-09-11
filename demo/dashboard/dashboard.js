@@ -544,6 +544,11 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .flow-node,.flow-arrow{transition:opacity 0.4s,filter 0.4s}
 .flow-node.dim{opacity:0.3;filter:grayscale(1)}
 .flow-arrow.dim{opacity:0.2}
+/* The hop doing the work right now, as opposed to the hops that are merely up.
+   Only ever set from a state the control plane reported: RESUMING is atenet
+   pulling the actor back off a snapshot, RUNNING is the actor holding a turn.
+   Nothing here is on a timer. */
+.flow-node.active{animation:pulse 1.2s infinite}
 .msg{padding:8px 12px;margin-bottom:6px;border-radius:4px;font-size:12px}
 .msg.inbound{background:var(--panel-2);border:1px solid var(--line);margin-right:20%}
 .msg.outbound{background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.2);margin-left:20%;text-align:right}
@@ -656,7 +661,7 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
       <div class="flow-arrow">→</div>
       <div class="flow-node gw" id="flow-gw"><b>Gateway</b><br><span style="color:var(--green)">Always-on</span></div>
       <div class="flow-arrow" id="flow-a2">→</div>
-      <div class="flow-node ate" id="flow-ate"><b>atenet</b><br><span style="color:var(--cyan)">Resume-on-demand</span></div>
+      <div class="flow-node ate" id="flow-ate"><b>atenet</b><br><span id="flow-ate-status" style="color:var(--cyan)">Resume-on-demand</span></div>
       <div class="flow-arrow" id="flow-a3">→</div>
       <div class="flow-node actor" id="flow-actor"><b>Agent Actor</b><br><span id="flow-actor-status" style="color:var(--muted)">--</span></div>
       <div class="flow-arrow" id="flow-a4">→</div>
@@ -744,10 +749,24 @@ async function refresh(){
       // Light the hops that are actually carrying the request. On suspend the
       // right-hand half of the path greys out and the gateway stays lit, which
       // is the design the video is trying to teach.
-      const live=actor.status==="RUNNING"||actor.status==="RESUMING";
-      for(const id of ["flow-a2","flow-ate","flow-a3","flow-actor","flow-a4","flow-llm"]){
-        el(id).classList.toggle("dim",!live);
-      }
+      //
+      // The lit set advances one box at a time because the actor's own state
+      // says which hop is doing the work: RESUMING is atenet restoring from a
+      // snapshot, and nothing downstream of it exists yet. There is no timer
+      // and no scripted sweep here. A travelling pulse would have to be
+      // invented, since a turn's hops take milliseconds and this polls every
+      // two seconds.
+      const resuming=actor.status==="RESUMING";
+      const running=actor.status==="RUNNING";
+      const reached={
+        "flow-a2":resuming||running, "flow-ate":resuming||running,
+        "flow-a3":running, "flow-actor":running,
+        "flow-a4":running, "flow-llm":running,
+      };
+      for(const id in reached) el(id).classList.toggle("dim",!reached[id]);
+      el("flow-ate").classList.toggle("active",resuming);
+      el("flow-actor").classList.toggle("active",running);
+      el("flow-ate-status").textContent=resuming?"Restoring snapshot":"Resume-on-demand";
     }
 
     // Gateway status

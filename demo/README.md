@@ -268,6 +268,21 @@ including what it refused: burst more actors than the pool has workers and the
 excess come back `no worker free (HTTP 503)`, which is the only place the
 one-actor-per-ateom rule is visible.
 
+Layout changes are checked rather than eyeballed. [`dashboard/preview/`](dashboard/preview/)
+serves the page's HTML straight out of `dashboard.js` next to a captured
+`/api/state`, and screenshots it at a given viewport with the scroll height
+printed. That turns a four-minute build-and-rollout into about a second, and it
+lets you render a mid-burst fleet without having one. It is a layout harness
+only: no server-side code runs in it.
+
+```bash
+curl -s http://<dashboard-ip>:8090/api/state > /tmp/state.json
+dashboard/preview/serve.py /tmp/state.json &
+google-chrome --headless=new --disable-gpu --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/chrome-preview &
+dashboard/preview/measure.py 'http://127.0.0.1:8099/?layout=demo' 1280 1080 /tmp/shot.png
+```
+
 Three things to know before you time it:
 
 - The **first** resume on a worker node that has never run a sandbox is slow

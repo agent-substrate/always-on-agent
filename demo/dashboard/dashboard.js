@@ -13,7 +13,7 @@
 // limitations under the License.
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { execSync, exec } from "node:child_process";
+import { exec } from "node:child_process";
 
 const app = new Hono();
 
@@ -25,23 +25,27 @@ const KUBECTL_ATE = process.env.KUBECTL_ATE || "kubectl-ate";
 // Atespace(s) the demo actors live in (current OSS actor model). Comma-separated.
 const ATESPACES = (process.env.ATESPACES || "openclaw-demo").split(",").map(s => s.trim()).filter(Boolean);
 
-const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || "";
-// Off by default. The WhatsApp panel is visible for the whole recording, so the
-// linked number shows as "linked" unless someone deliberately opts in.
-const SHOW_NUMBER = process.env.SHOW_WHATSAPP_NUMBER === "true";
-
+// Deliberately no channel state here, and no channel panel below.
+//
+// The dashboard used to report WhatsApp link state, list the thread and drive
+// pairing. All of it duplicated WhatsApp Web, which is on screen next to this
+// during the recording, and all of it was wrong at some point: a green light on
+// an account that was never linked, a pairing button shelling out to a script
+// that is not in the image, and a message list nothing ever wrote to. It was
+// also the only reason this needed `pods/exec`, which is the one privilege a
+// read-only panel should not hold.
+//
+// What is left is what only this can show: which worker pod holds which actor,
+// and what the fleet did over time. One source, read-only, nothing to drift.
 const state = {
   pods: [],
   actors: [],
-  gatewayHealth: { ok: false, ready: false, channels: {} },
-  whatsapp: { status: "unknown", connected: false, number: null, lastInbound: null, qrDataUrl: null },
-  messages: [],
+  gatewayHealth: { ok: false, ready: false },
   events: [],
   timeline: [],
   stats: {
     totalResumes: 0,
     totalSuspends: 0,
-    totalMessages: 0,
     totalLogicalActiveSec: 0,
     totalPhysicalActiveSec: 0,
     lastSwapLatencyMs: 0,
@@ -52,16 +56,6 @@ const state = {
 };
 
 const MAX_EVENTS = 200;
-const MAX_MESSAGES = 100;
-
-// `openclaw channels status` boots the gateway CLI to answer, so it costs tens
-// of seconds, not milliseconds. It gets its own slow cadence and its own
-// timeout, well clear of the 2s sync loop.
-const CHANNEL_POLL_MS = 60000;
-const CHANNEL_POLL_TIMEOUT_MS = 45000;
-let lastChannelPoll = 0;
-let channelPollInFlight = false;
-let gatewayPodName = "";
 
 function runCmd(cmd, timeoutMs = 10000) {
   return new Promise((resolve) => {
@@ -85,77 +79,6 @@ function addTimeline(actor, event, detail) {
   const ts = new Date().toISOString().slice(11, 19);
   state.timeline.unshift({ timestamp: ts, actor, event, detail });
   if (state.timeline.length > 60) state.timeline.pop();
-}
-
-// WhatsApp link state, asked of the gateway rather than inferred from it.
-//
-// /readyz answers a question about the gateway process, not about the channel,
-// and it returns ready on a gateway with no channels configured at all.
-// Deriving "WhatsApp connected" from it put a green light on screen for an
-// account that was never linked, which is the one lie this panel must not tell
-// during a recording. `channels status` is the gateway's own answer and carries
-// per-account linked/connected flags.
-//
-// Deliberately not awaited by the sync loop. The CLI boots the whole gateway
-// app to answer, which takes tens of seconds, and link state doesn't change on
-// the 2s timescale the rest of the dashboard runs at. So it refreshes slowly in
-// the background and the panel shows the last known answer in between.
-async function refreshChannelStatus(now) {
-  if (channelPollInFlight || now - lastChannelPoll < CHANNEL_POLL_MS) return;
-  channelPollInFlight = true;
-  lastChannelPoll = now;
-  try {
-    if (!gatewayPodName) {
-      gatewayPodName = await runCmd(
-        `kubectl -n ${NS} get pods -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}'`
-      );
-    }
-    if (!gatewayPodName) return;
-
-    const raw = await runCmd(
-      `kubectl -n ${NS} exec ${gatewayPodName} -c gateway -- openclaw channels status --json 2>/dev/null`,
-      CHANNEL_POLL_TIMEOUT_MS
-    );
-    const j = JSON.parse(raw);
-    // channelAccounts maps a channel id to an array of account snapshots. An
-    // absent whatsapp key means the channel isn't set up at all, which is a
-    // different problem from set up and offline, so the panel says which.
-    const accounts = (j.channelAccounts || {}).whatsapp || [];
-    const acct = accounts.find((a) => a.connected) || accounts[0];
-    const wasStatus = state.whatsapp.status;
-
-    state.whatsapp.connected = acct ? acct.connected === true : false;
-    state.whatsapp.status = !acct
-      ? "not configured"
-      : acct.connected === true
-        ? "connected"
-        : acct.linked === true
-          ? "linked, offline"
-          : "not linked";
-    // The number itself is withheld unless SHOW_WHATSAPP_NUMBER is set: this
-    // panel is on screen for the whole recording, and a real number in one
-    // frame outlives the video.
-    // An unlinked account still has an accountId, so gating only on that put the
-    // word "linked" in the number field of a panel whose status line said "not
-    // linked" directly above it.
-    if (acct && acct.accountId && acct.linked === true) {
-      const number = "+" + String(acct.accountId).split(":")[0].split("@")[0];
-      state.whatsapp.number = SHOW_NUMBER ? number : "linked";
-    } else {
-      state.whatsapp.number = null;
-    }
-    if (acct && acct.lastInboundAt) {
-      state.whatsapp.lastInbound = new Date(acct.lastInboundAt).toISOString().slice(11, 19);
-    }
-    if (state.whatsapp.status !== wasStatus) {
-      addEvent("whatsapp", `WhatsApp ${state.whatsapp.status}`);
-    }
-  } catch {
-    // Leave the last known state rather than flapping the panel on one slow or
-    // failed exec.
-  } finally {
-    channelPollInFlight = false;
-  }
 }
 
 async function syncState() {
@@ -263,7 +186,6 @@ async function syncState() {
       try {
         const readyData = await readyRes.json();
         state.gatewayHealth.ready = readyData.ready === true;
-        state.gatewayHealth.channels = readyData;
       } catch {
         state.gatewayHealth.ready = readyRes.ok;
       }
@@ -271,39 +193,6 @@ async function syncState() {
       state.gatewayHealth.ok = false;
       state.gatewayHealth.ready = false;
     }
-
-    refreshChannelStatus(now);
-
-    // Fetch messages from gateway session history API
-    try {
-      const histRes = await fetch(
-        `${GATEWAY_URL}/sessions/agent:main:main/history`,
-        { headers: { Authorization: `Bearer ${GATEWAY_TOKEN}` }, signal: AbortSignal.timeout(5000) }
-      );
-      if (histRes.ok) {
-        const hist = await histRes.json();
-        const items = hist.items || [];
-        const newMessages = [];
-        for (const item of items) {
-          const ts = item.timestamp ? new Date(item.timestamp).toISOString().slice(11, 19) : "";
-          if (item.role === "user" && typeof item.content === "string") {
-            newMessages.push({ timestamp: ts, from: "user", text: item.content, direction: "inbound" });
-          } else if (item.role === "assistant") {
-            const parts = Array.isArray(item.content) ? item.content : [item.content];
-            const textParts = parts.filter(p => p?.type === "text" && p.text).map(p => p.text);
-            if (textParts.length) {
-              newMessages.push({ timestamp: ts, from: "assistant", text: textParts.join("\n"), direction: "outbound" });
-            }
-          }
-        }
-        if (newMessages.length !== state.messages.length) {
-          state.stats.totalMessages = newMessages.filter(m => m.direction === "inbound").length;
-        }
-        state.messages = newMessages.slice(-MAX_MESSAGES);
-        const lastIn = [...newMessages].reverse().find(m => m.direction === "inbound");
-        state.whatsapp.lastInbound = lastIn ? lastIn.timestamp : (state.whatsapp.lastInbound || null);
-      }
-    } catch {}
 
     const elapsed = (now - state.stats.lastSync) / 1000;
     state.stats.lastSync = now;
@@ -318,75 +207,6 @@ async function syncState() {
   }
   setTimeout(syncState, 2000);
 }
-
-app.post("/api/whatsapp/connect", async (c) => {
-  addEvent("whatsapp", "Starting WhatsApp pairing process...");
-  try {
-    const gatewayPod = await runCmd(
-      `kubectl -n ${NS} get pods -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}'`
-    );
-    if (!gatewayPod) {
-      return c.json({ ok: false, error: "Gateway pod not found" });
-    }
-
-    // Safety guard: never wipe a live session (a stray click was what unpaired
-    // it before). This used to guard on /readyz, which reports gateway process
-    // health and says ready even with no channel configured, so it refused
-    // every click including the legitimate ones. Guard on the link state the
-    // gateway actually reports instead.
-    if (state.whatsapp.connected === true) {
-      return c.json({ ok: false, error: "WhatsApp is already connected, refusing to reset. Only use this when disconnected." });
-    }
-
-    // Hand pairing to the supported CLI path. The old code shelled out to
-    // /app/pair-qr.cjs, a script that does not exist in the gateway image, and
-    // to a Baileys creds directory the current OpenClaw doesn't use, so the
-    // button reported success and nothing happened.
-    await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- rm -f /tmp/whatsapp-qr.txt /tmp/pair-log.txt`);
-    await runCmd(
-      `kubectl -n ${NS} exec ${gatewayPod} -c gateway -- sh -c ` +
-      `'nohup timeout 180 openclaw channels login --channel whatsapp > /tmp/pair-log.txt 2>&1 &'`
-    );
-
-    addEvent("whatsapp", "Pairing process started (3 min window)");
-    state.whatsapp.status = "pairing";
-    return c.json({ ok: true, message: "Pairing started. QR will appear shortly." });
-  } catch (e) {
-    addEvent("whatsapp", `Start error: ${e.message}`);
-    return c.json({ ok: false, error: e.message });
-  }
-});
-
-app.get("/api/whatsapp/qr", async (c) => {
-  try {
-    const gatewayPod = await runCmd(
-      `kubectl -n ${NS} get pods -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}'`
-    );
-    if (!gatewayPod) return c.json({ status: "no_gateway" });
-
-    // Read the login CLI's own output. There is no whatsapp-qr.txt: that file
-    // was written by a pairing script that isn't in the image, so this endpoint
-    // used to answer "waiting" forever.
-    //
-    // The pairing payload is the ref string WhatsApp encodes in the QR, which
-    // Baileys emits with a `2@` prefix. If it hasn't appeared yet, hand back the
-    // log tail rather than a bare "waiting", so an operator staring at a stuck
-    // pairing can see what the gateway is actually saying.
-    const log = await runCmd(`kubectl -n ${NS} exec ${gatewayPod} -c gateway -- tail -c 4000 /tmp/pair-log.txt 2>/dev/null`);
-    if (!log) return c.json({ status: "waiting" });
-
-    if (state.whatsapp.connected === true) {
-      return c.json({ status: "connected" });
-    }
-
-    const ref = log.match(/2@[A-Za-z0-9+/=_-]{20,}/g);
-    if (ref) return c.json({ status: "qr_ready", qrData: ref[ref.length - 1] });
-
-    return c.json({ status: "pairing", log: log.slice(-1500) });
-  } catch {
-    return c.json({ status: "error" });
-  }
-});
 
 app.get("/api/state", (c) => {
   const density =
@@ -475,23 +295,8 @@ app.post("/api/burst", async (c) => {
       })
       .catch(() => {});
   }
-  state.stats.totalMessages += count;
   addEvent("substrate", `Burst: fired ${count} tasks, actors now multiplexing onto the worker pool`);
   return c.json({ ok: true, count, actors: names });
-});
-
-app.post("/api/message", async (c) => {
-  const body = await c.req.json();
-  state.messages.push({
-    timestamp: new Date().toISOString().slice(11, 19),
-    from: body.from || "user",
-    text: body.text || "",
-    direction: body.direction || "inbound",
-  });
-  state.stats.totalMessages++;
-  if (state.messages.length > MAX_MESSAGES) state.messages.shift();
-  addEvent("whatsapp", `${body.direction === "outbound" ? "→" : "←"} ${body.text?.slice(0, 80)}`);
-  return c.json({ ok: true });
 });
 
 app.get("/", (c) =>
@@ -500,7 +305,6 @@ app.get("/", (c) =>
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenClaw on Substrate</title>
-<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <style>
 :root{--bg:#0d1117;--panel:#161b22;--panel-2:#010409;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--green-bg:rgba(63,185,80,0.1);--red:#f85149;--cyan:#79c0ff;--yellow:#e3b341;--orange:#d29922;--pink:#f778ba}
 *{box-sizing:border-box}
@@ -515,7 +319,6 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .row-4{grid-template-columns:repeat(4,1fr)}
 .row-3{grid-template-columns:repeat(3,1fr)}
 .row-2{grid-template-columns:1fr 1fr}
-.row-2-wide{grid-template-columns:2fr 1fr}
 .row-1{grid-template-columns:1fr}
 .stat-card{text-align:center;padding:16px}
 .stat-val{font-size:28px;font-weight:800;margin:6px 0 2px}
@@ -529,7 +332,6 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .box.active{border-color:var(--green);box-shadow:0 0 12px rgba(63,185,80,0.15)}
 .shell{background:var(--panel-2);border:1px solid #000;padding:12px;height:320px;overflow-y:auto;font-size:12px}
 .shell-line{margin-bottom:4px;white-space:pre-wrap;padding-left:8px;border-left:2px solid transparent}
-.shell-line.whatsapp{color:var(--green);border-left-color:var(--green)}
 .shell-line.substrate{color:var(--cyan);border-left-color:var(--cyan)}
 .shell-line.sys{color:var(--muted)}
 .flow{display:flex;align-items:center;gap:16px;justify-content:center;padding:12px 0;flex-wrap:wrap}
@@ -549,12 +351,6 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
    pulling the actor back off a snapshot, RUNNING is the actor holding a turn.
    Nothing here is on a timer. */
 .flow-node.active{animation:pulse 1.2s infinite}
-.msg{padding:8px 12px;margin-bottom:6px;border-radius:4px;font-size:12px}
-.msg.inbound{background:var(--panel-2);border:1px solid var(--line);margin-right:20%}
-.msg.outbound{background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.2);margin-left:20%;text-align:right}
-.msg-meta{font-size:10px;color:var(--muted);margin-top:2px}
-.wa-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:9px 2px;border-bottom:1px dashed var(--line);color:var(--muted)}
-.wa-row b{color:var(--text);font-weight:700}
 .tl-row{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 2px;border-bottom:1px dashed var(--line)}
 .tl-time{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0}
 .tl-badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:800;text-transform:uppercase;border:1px solid;flex-shrink:0}
@@ -563,7 +359,7 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .burst-btn{background:var(--yellow);color:#0d1117;border:none;border-radius:5px;padding:7px 14px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;transition:opacity 0.2s}
 .burst-btn:hover{opacity:0.85}
 .burst-btn:disabled{opacity:0.4;cursor:not-allowed}
-@media(max-width:900px){.row-4{grid-template-columns:repeat(2,1fr)}.row-2,.row-2-wide,.row-3{grid-template-columns:1fr}}
+@media(max-width:900px){.row-4{grid-template-columns:repeat(2,1fr)}.row-2,.row-3{grid-template-columns:1fr}}
 
 /* Recording layout: ?layout=demo.
    The operator view is nine panels tall and has to be scrolled, which is fine
@@ -612,10 +408,13 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
     <div class="stat-val" id="s-cycles" style="color:var(--cyan)">0</div>
     <div class="stat-label" id="s-cycles-label">Total transitions</div>
   </div>
+  <!-- Occupancy rather than a message count: it is read straight off the pod
+       list, it goes 0/5 → 5/5 → 0/5 across a burst, and it is the number the
+       oversubscription argument actually rests on. -->
   <div class="card stat-card" style="border-color:var(--pink)">
-    <div class="stat-label">Messages Processed</div>
-    <div class="stat-val" id="s-msgs" style="color:var(--pink)">0</div>
-    <div class="stat-label">Via WhatsApp</div>
+    <div class="stat-label">Workers Occupied</div>
+    <div class="stat-val" id="s-occ" style="color:var(--pink)">--</div>
+    <div class="stat-label" id="s-occ-label">one actor per ateom</div>
   </div>
 </div>
 
@@ -670,35 +469,17 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
   </div>
 </div>
 
-<!-- Both of these are replaced on camera by the real thing: WhatsApp Web is on
-     screen next to the dashboard, and the terminal carries the event log. -->
-<div class="row row-2-wide demo-hide">
+<!-- Hidden on camera: the terminal beside the dashboard carries the same log,
+     larger and in a window the viewer already trusts. -->
+<div class="row row-1 demo-hide">
   <div class="card">
     <h2>Event Stream</h2>
-    <div class="desc">Real-time orchestration events: actor lifecycle, WhatsApp messages, and system operations</div>
+    <div class="desc">Real-time orchestration events: actor lifecycle and system operations</div>
     <div id="shell" class="shell"></div>
-  </div>
-  <div class="card" id="wa-card">
-    <h2 style="border-left-color:var(--green)">WhatsApp Gateway</h2>
-    <div class="desc">Presence layer: always-on, never suspended</div>
-    <div style="display:flex;align-items:center;gap:10px;margin:10px 0 16px">
-      <span id="wa-dot" style="width:15px;height:15px;border-radius:50%;background:var(--muted);display:inline-block"></span>
-      <span id="wa-state" style="font-size:24px;font-weight:800;color:var(--muted)">Checking…</span>
-    </div>
-    <div class="wa-row"><span>Channel</span><b>WhatsApp · persistent WebSocket</b></div>
-    <div class="wa-row"><span>Linked number</span><b id="wa-number">-</b></div>
-    <div class="wa-row"><span>Gateway process</span><b id="wa-gw">-</b></div>
-    <div class="wa-row"><span>Last inbound</span><b id="wa-last">-</b></div>
-    <div class="wa-row" style="border:none"><span>Messages processed</span><b id="wa-count">0</b></div>
   </div>
 </div>
 
-<div class="row row-3">
-  <div class="card demo-hide">
-    <h2 style="border-left-color:var(--pink)">WhatsApp Messages</h2>
-    <div class="desc">Conversation flow between user and the Substrate-backed agent</div>
-    <div id="messages" style="height:240px;overflow-y:auto;padding:8px"></div>
-  </div>
+<div class="row row-2">
   <div class="card">
     <h2>Worker Pod Map</h2>
     <div class="desc">Physical Kubernetes pods: shows which actor is landed on each</div>
@@ -769,29 +550,20 @@ async function refresh(){
       el("flow-ate-status").textContent=resuming?"Restoring snapshot":"Resume-on-demand";
     }
 
-    // Gateway status
-    const waConnected=d.gatewayHealth.ready&&d.gatewayHealth.ok;
+    // Gateway status. Reports the gateway process, not any channel it carries:
+    // /readyz says the gateway is up and serving, and says nothing about
+    // whether WhatsApp is linked. This used to claim "WhatsApp Connected" off
+    // exactly that signal.
     el("s-gw").textContent=d.gatewayHealth.ok?"LIVE":"DOWN";
     el("s-gw").style.color=d.gatewayHealth.ok?"var(--green)":"var(--red)";
-    el("s-gw-label").textContent=waConnected?"WhatsApp Connected":"Channels Connecting...";
+    el("s-gw-label").textContent=d.gatewayHealth.ready?"Ready · always-on":"Starting…";
     el("flow-gw").style.borderColor=d.gatewayHealth.ok?"var(--green)":"var(--red)";
 
-    // WhatsApp Gateway status panel (live, read-only)
-    const wc=d.whatsapp.connected;
-    el("wa-dot").style.background=wc?"var(--green)":"var(--red)";
-    el("wa-dot").style.animation=wc?"pulse 2s infinite":"none";
-    el("wa-state").textContent=wc?"Connected":"Disconnected";
-    el("wa-state").style.color=wc?"var(--green)":"var(--red)";
-    el("wa-number").textContent=d.whatsapp.number||"not linked";
-    el("wa-gw").textContent=d.gatewayHealth.ok?"LIVE (always-on)":"down";
-    el("wa-gw").style.color=d.gatewayHealth.ok?"var(--green)":"var(--red)";
-    el("wa-last").textContent=d.whatsapp.lastInbound||"-";
-    el("wa-count").textContent=d.stats.totalMessages;
-
-    // Cycles + Messages
+    // Cycles + occupancy
     el("s-cycles").textContent=d.stats.totalResumes+d.stats.totalSuspends;
     el("s-cycles-label").textContent=d.stats.totalResumes+" resumes / "+d.stats.totalSuspends+" suspends";
-    el("s-msgs").textContent=d.stats.totalMessages;
+    el("s-occ").textContent=d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers;
+    el("s-occ-label").textContent=(d.stats.physicalWorkers-d.stats.occupiedWorkers)+" ateoms free";
 
     // Operational efficiency
     el("eff-ratio").textContent=d.stats.oversubscription||"--";
@@ -812,25 +584,6 @@ async function refresh(){
       return '<div class="shell-line '+cls+'">['+e.timestamp+'] ['+cls.toUpperCase()+'] '+e.message+'</div>';
     }).join("");
     el("shell").scrollTop=el("shell").scrollHeight;
-
-    // Messages
-    if(d.messages.length){
-      el("messages").innerHTML=d.messages.map((m,i)=>{
-        const full=escHtml(m.text);
-        const maxLen=120;
-        const truncated=full.length>maxLen;
-        const preview=truncated?full.slice(0,maxLen)+'...':full;
-        const id='msg-'+i;
-        return '<div class="msg '+m.direction+'">'
-          +'<div id="'+id+'-short" data-toggle="'+id+'"'+(truncated?' style="cursor:pointer"':'')+'>'+preview+(truncated?' <span style="color:var(--cyan);font-size:10px">[show more]</span>':'')+'</div>'
-          +(truncated?'<div id="'+id+'-full" data-toggle="'+id+'" style="display:none;cursor:pointer;white-space:pre-wrap">'+full+' <span style="color:var(--cyan);font-size:10px">[show less]</span></div>':'')
-          +'<div class="msg-meta">'+m.timestamp+' · '+m.from+'</div></div>';
-      }).join("");
-      el("messages").onclick=function(ev){var t=ev.target.closest("[data-toggle]");if(t)toggleMsg(t.getAttribute("data-toggle"));};
-      el("messages").scrollTop=el("messages").scrollHeight;
-    }else{
-      el("messages").innerHTML='<div style="text-align:center;color:var(--muted);padding:40px">Waiting for WhatsApp messages...</div>';
-    }
 
     // Pods
     el("pods").innerHTML=d.pods.length?d.pods.map(p=>{
@@ -863,87 +616,11 @@ async function refresh(){
         +'<b style="color:'+nc+'">'+escHtml(t.actor)+'</b>'
         +'<span class="tl-detail">'+escHtml(t.detail||"")+'</span>'
         +'</div>';
-    }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No agent tasks yet. Click Burst or send a WhatsApp message</div>';
+    }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No agent tasks yet. Hit Burst, or send the agent a message</div>';
 
   }catch(e){}
 }
 function escHtml(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
-function toggleMsg(id){
-  const s=document.getElementById(id+"-short");
-  const f=document.getElementById(id+"-full");
-  if(!s||!f)return;
-  if(f.style.display==="none"){f.style.display="block";s.style.display="none";}
-  else{f.style.display="none";s.style.display="block";}
-}
-let qrPollInterval=null;
-async function connectWhatsApp(){
-  const btn=document.getElementById("wa-connect-btn");
-  const st=document.getElementById("wa-status-text");
-  btn.disabled=true;btn.textContent="Starting...";
-  st.textContent="Connecting to WhatsApp servers...";
-  try{
-    await fetch("/api/whatsapp/connect",{method:"POST"});
-    st.textContent="Waiting for QR code...";
-    if(qrPollInterval)clearInterval(qrPollInterval);
-    qrPollInterval=setInterval(pollQR,2000);
-    setTimeout(()=>pollQR(),1000);
-  }catch(e){st.textContent="Error: "+e.message;btn.textContent="Retry";btn.disabled=false;}
-}
-async function pollQR(){
-  const st=document.getElementById("wa-status-text");
-  const img=document.getElementById("wa-qr-img");
-  const btn=document.getElementById("wa-connect-btn");
-  try{
-    const res=await fetch("/api/whatsapp/qr");
-    const data=await res.json();
-    if(data.status==="connected"){
-      clearInterval(qrPollInterval);
-      img.innerHTML='<div style="font-size:48px;color:var(--green)">&#10003;</div>';
-      st.textContent="WhatsApp linked successfully!";
-      btn.textContent="Connected";btn.disabled=true;btn.style.background="var(--green)";
-      return;
-    }
-    if(data.status==="qr_ready"&&data.qrData){
-      const canvas=document.createElement("canvas");
-      canvas.width=280;canvas.height=280;
-      renderQR(canvas,data.qrData);
-      img.innerHTML="";img.appendChild(canvas);
-      st.innerHTML="Scan with WhatsApp<br><b>Settings → Linked Devices → Link a Device</b><br><small style='color:var(--muted)'>QR refreshes automatically every ~20s</small>";
-      btn.textContent="Restart";btn.disabled=false;
-    }else if(data.status==="pairing"){
-      // No QR payload yet. Show what the gateway is saying instead of a spinner
-      // that hides an error.
-      const tail=(data.log||"").trim().split("\n").slice(-3).join("\n");
-      st.innerHTML="Pairing...<pre style='text-align:left;font-size:10px;color:var(--muted);white-space:pre-wrap;margin-top:6px'>"+escHtml(tail)+"</pre>";
-    }else if(data.status==="waiting"){
-      st.textContent="Waiting for QR code...";
-    }
-  }catch(e){}
-}
-function renderQR(canvas,text){
-  const modules=generateQRMatrix(text);
-  if(!modules){canvas.getContext("2d").fillStyle="#333";canvas.getContext("2d").fillRect(0,0,280,280);return;}
-  const ctx=canvas.getContext("2d");
-  const size=modules.length;
-  const px=Math.floor(280/size);
-  const off=Math.floor((280-px*size)/2);
-  ctx.fillStyle="#ffffff";ctx.fillRect(0,0,280,280);
-  ctx.fillStyle="#000000";
-  for(let r=0;r<size;r++)for(let c=0;c<size;c++){
-    if(modules[r][c])ctx.fillRect(off+c*px,off+r*px,px,px);
-  }
-}
-function generateQRMatrix(data){
-  try{
-    if(typeof qrcode!=="undefined"){
-      const qr=qrcode(0,"L");qr.addData(data);qr.make();
-      const cnt=qr.getModuleCount();
-      const m=[];for(let r=0;r<cnt;r++){m[r]=[];for(let c=0;c<cnt;c++)m[r][c]=qr.isDark(r,c);}
-      return m;
-    }
-  }catch(e){}
-  return null;
-}
 async function burst(n){
   const s=document.getElementById("burst-status");
   document.querySelectorAll(".burst-btn").forEach(b=>b.disabled=true);

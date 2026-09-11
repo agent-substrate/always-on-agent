@@ -52,38 +52,11 @@ roleRef:
   name: openclaw-dashboard
   apiGroup: rbac.authorization.k8s.io
 ---
-# The WhatsApp panel and the pairing button both work by exec'ing into the
-# gateway container: the link state is read out of Baileys' creds.json, and
-# pairing clears that file and re-reads the QR. Without this the panel reports
-# "not linked" for an account that is in fact connected, which is the worst
-# possible thing to have on screen during a recording.
+# There is deliberately no pods/exec grant here. The dashboard used to hold one
+# so it could read WhatsApp link state out of the gateway container and drive
+# pairing. Both panels are gone, and with them the only verb this ServiceAccount
+# had that could change anything. It is now read-only against the cluster.
 #
-# Namespaced to openclaw rather than added to the ClusterRole, because exec is
-# the one verb here that can change something.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: openclaw-dashboard-gateway-exec
-  namespace: openclaw
-rules:
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create", "get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: openclaw-dashboard-gateway-exec
-  namespace: openclaw
-subjects:
-  - kind: ServiceAccount
-    name: openclaw-dashboard
-    namespace: openclaw
-roleRef:
-  kind: Role
-  name: openclaw-dashboard-gateway-exec
-  apiGroup: rbac.authorization.k8s.io
----
 # kubectl-ate does not present the pod's own ServiceAccount token to ateapi. It
 # mints one by issuing a TokenRequest against ate-system/ate-client, so without
 # this the dashboard authenticates as nobody and every actor call comes back

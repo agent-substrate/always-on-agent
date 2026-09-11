@@ -253,9 +253,20 @@ the gateway image carried a build old enough to predate `--authentication-config
 so it sent no bearer token and the dashboard showed an empty actor list while
 every pod stayed green.
 
-Add `?layout=demo` to the URL for the recording layout: same data, the event
-stream and the derived savings figure hidden, and everything tightened so it
-fits beside WhatsApp Web at 1080p without scrolling.
+Add `?layout=demo` to the URL for the recording layout. Same panels and the
+same data; the only thing hidden is the Economic Savings card. What changes is
+density: the fleet becomes a grid of chips so all sixteen actors are on screen,
+the pod map drops the IPs so all five workers are, and the atespace suffix comes
+off every actor name. The target is a 1280x1080 viewport, which is the left two
+thirds of a 1080p capture with the browser in fullscreen. It measures 1027px
+tall, so nothing scrolls and nothing sits below the fold.
+
+Two panels sit side by side at the bottom and look like the same panel twice.
+They are not. The timeline is per-actor and says what the control plane did,
+newest first. The event stream is per-operation and says what was asked of it,
+including what it refused: burst more actors than the pool has workers and the
+excess come back `no worker free (HTTP 503)`, which is the only place the
+one-actor-per-ateom rule is visible.
 
 Three things to know before you time it:
 

@@ -286,11 +286,21 @@ app.post("/api/burst", async (c) => {
         // response isn't a thrown error, so this used to vanish into the .catch()
         // and the actor just sat SUSPENDED while the timeline claimed a task had
         // been fired at it.
-        if (!r.ok) {
+        if (r.status === 503) {
           addEvent(
             "substrate",
-            `${name}: no worker free (HTTP ${r.status}); pool is ${state.pods.length} ateoms, one actor each`
+            `${name}: no worker free (HTTP 503); pool is ${state.pods.length} ateoms, one actor each`
           );
+        } else if (r.status === 504) {
+          // Not the same fact as a 503, and it used to be reported as one. The
+          // pool had room, atenet accepted the actor and the restore outran the
+          // gateway's timeout: the actor usually comes up a second or two later
+          // and the fleet panel shows it RESUMING while this line is still on
+          // screen. Calling that "no worker free" contradicts the panel next to
+          // it.
+          addEvent("substrate", `${name}: restore outran the request timeout (HTTP 504); actor is still coming up`);
+        } else if (!r.ok) {
+          addEvent("substrate", `${name}: resume request failed HTTP ${r.status}`);
         }
       })
       .catch(() => {});
@@ -329,6 +339,13 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .badge.RESUMING{background:rgba(121,192,255,0.1);color:var(--cyan);border-color:var(--cyan);animation:pulse 1s infinite}
 .badge.SUSPENDING{background:rgba(227,179,65,0.1);color:var(--yellow);border-color:var(--yellow)}
 .box{background:var(--panel-2);border:1px solid var(--line);padding:12px;margin-bottom:8px;border-radius:4px;transition:all 0.3s}
+.box-hd{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.box .sub{font-size:11px;color:var(--muted);margin-top:4px}
+/* The occupying actor on the pod's header line. Only the recording layout
+   shows it; in the operator view the same name is in the detail line under
+   the IP. */
+.box .occ{display:none;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#timeline{max-height:260px;overflow-y:auto}
 .box.active{border-color:var(--green);box-shadow:0 0 12px rgba(63,185,80,0.15)}
 .shell{background:var(--panel-2);border:1px solid #000;padding:12px;height:320px;overflow-y:auto;font-size:12px}
 .shell-line{margin-bottom:4px;white-space:pre-wrap;padding-left:8px;border-left:2px solid transparent}
@@ -362,10 +379,12 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 @media(max-width:900px){.row-4{grid-template-columns:repeat(2,1fr)}.row-2,.row-3{grid-template-columns:1fr}}
 
 /* Recording layout: ?layout=demo.
-   The operator view is nine panels tall and has to be scrolled, which is fine
-   at a desk and useless on camera, where the dashboard shares the screen with
-   WhatsApp Web and a terminal. This drops it to what the video argues with and
-   fits the rest in one column with no scrolling. */
+   The operator view has to be scrolled, which is fine at a desk and useless on
+   camera, where the dashboard shares the screen with WhatsApp Web and a
+   terminal. Nothing is hidden here except the Economic Savings card. The rest
+   is the same panels, tightened and paired up two to a row, so the whole thing
+   lands inside 1080p with nothing below the fold. If a panel needs scrolling to
+   see the current state, it is the wrong height, not the wrong panel. */
 body.demo{padding:14px}
 body.demo header{margin-bottom:12px}
 body.demo header h1{font-size:18px}
@@ -374,12 +393,39 @@ body.demo .row{gap:12px;margin-bottom:12px}
 body.demo .row-3{grid-template-columns:repeat(2,1fr)}
 body.demo .card{padding:12px}
 body.demo .card .desc{display:none}
-body.demo .stat-card{padding:10px}
+body.demo .stat-card{padding:8px}
 body.demo .stat-val{font-size:24px}
 body.demo .flow{gap:10px;padding:6px 0}
 body.demo .flow-node{min-width:106px;padding:8px 12px}
-body.demo #pods,body.demo #actors{max-height:230px;overflow-y:auto}
-body.demo #timeline{max-height:210px}
+/* Nothing here scrolls if the cluster is the size the demo README says it is:
+   five workers and sixteen actors. A panel that has to be scrolled to see the
+   current state is the same as a panel that is wrong. */
+body.demo .ats{display:none}
+body.demo #pods,body.demo #actors{max-height:228px;overflow-y:auto}
+body.demo #pods .box{padding:7px 10px;margin-bottom:6px}
+body.demo #pods .box .occ{display:block;flex:1;text-align:right}
+body.demo #pods .box .sub{display:none}
+/* Sixteen chips, four across. The status badge sits under the name rather than
+   beside it: at this width they would collide, and the badge is the thing the
+   eye is tracking as the fleet wakes up. */
+body.demo #actors{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;align-content:start}
+body.demo #actors .box{padding:5px 8px;margin-bottom:0;line-height:1.15}
+body.demo #actors .box-hd{display:block}
+/* Forced onto its own line even when the name is short enough to sit beside the
+   badge, so every chip is the same height. Sixteen chips of two heights reads
+   as a rendering bug. */
+body.demo #actors .box-hd b{display:block;font-size:12px}
+body.demo #actors .badge{font-size:8px;padding:0 5px;margin-top:2px}
+body.demo #actors .box .sub{display:none}
+/* The timeline and the event stream share a row, so they get the same height:
+   two panels of different heights side by side reads as one of them being
+   broken. */
+/* An exact multiple of the row height, so the panel does not end on a row
+   sliced in half. */
+body.demo #timeline{max-height:200px}
+body.demo .shell{height:200px}
+body.demo .tl-row{padding:5px 2px;font-size:11px}
+body.demo .tl-detail{padding-right:6px}
 </style>
 </head>
 <body>
@@ -469,16 +515,6 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
   </div>
 </div>
 
-<!-- Hidden on camera: the terminal beside the dashboard carries the same log,
-     larger and in a window the viewer already trusts. -->
-<div class="row row-1 demo-hide">
-  <div class="card">
-    <h2>Event Stream</h2>
-    <div class="desc">Real-time orchestration events: actor lifecycle and system operations</div>
-    <div id="shell" class="shell"></div>
-  </div>
-</div>
-
 <div class="row row-2">
   <div class="card">
     <h2>Worker Pod Map</h2>
@@ -492,11 +528,21 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
   </div>
 </div>
 
-<div class="row row-1">
+<!-- Side by side, and both on camera. They look like the same panel twice and
+     are not: the timeline is per-actor and says what the control plane did,
+     the stream is per-operation and says what was asked of it. The one that
+     earns the stream its place is the 503 on a burst wider than the pool,
+     which is the only visible sign that a worker holds one actor at a time. -->
+<div class="row row-2">
   <div class="card">
     <h2 style="border-left-color:var(--cyan)">Agent Task Timeline</h2>
     <div class="desc">Per-actor lifecycle: resume-on-demand → serving → suspend, newest first</div>
-    <div id="timeline" style="max-height:260px;overflow-y:auto"></div>
+    <div id="timeline"></div>
+  </div>
+  <div class="card">
+    <h2>Event Stream</h2>
+    <div class="desc">Per-operation log: what was asked of the control plane, and what it refused</div>
+    <div id="shell" class="shell"></div>
   </div>
 </div>
 
@@ -508,6 +554,17 @@ function colorFor(name){
   let h=0;for(let i=0;i<name.length;i++){h=(h*31+name.charCodeAt(i))>>>0;}
   return ACTOR_PALETTE[h%ACTOR_PALETTE.length];
 }
+// Actor names carry their atespace ("oc-agent-3 @openclaw-demo"). In the demo
+// there is exactly one atespace, so that tail is the same fourteen characters
+// on every row of three panels. It stays in the operator view, where more than
+// one atespace is possible, and the recording layout hides it: that width is
+// what the fleet grid and the timeline's detail column are short of.
+function actorHtml(name,color){
+  const at=name.indexOf(" @");
+  const st=color?' style="color:'+color+'"':'';
+  if(at<0)return '<b'+st+'>'+escHtml(name)+'</b>';
+  return '<b'+st+'>'+escHtml(name.slice(0,at))+'<span class="ats">'+escHtml(name.slice(at))+'</span></b>';
+}
 async function refresh(){
   try{
     const res=await fetch("/api/state?t="+Date.now());
@@ -516,16 +573,32 @@ async function refresh(){
 
     el("sync").innerHTML="● "+new Date().toLocaleTimeString();
 
-    // Actor status card
-    const actor=d.actors[0];
-    if(actor){
+    // Actor status card, and the flow panel under it.
+    //
+    // Both read the whole fleet, not one actor. They used to read d.actors[0],
+    // which is whichever actor the API happens to list first: during a burst of
+    // oc-agent-1 through 5 that one is still suspended, so this card said
+    // SUSPENDED and the flow panel greyed out its right-hand half while the pod
+    // map two panels down showed five workers occupied. Two panels contradicting
+    // each other on camera costs more than either of them is worth.
+    if(d.actors.length){
       const colors={RUNNING:"var(--green)",SUSPENDED:"var(--muted)",RESUMING:"var(--cyan)",SUSPENDING:"var(--yellow)"};
-      el("s-actor").textContent=actor.status;
-      el("s-actor").style.color=colors[actor.status]||"var(--muted)";
-      el("s-actor-label").textContent=actor.name;
-      el("flow-actor-status").textContent=actor.status;
-      el("flow-actor-status").style.color=colors[actor.status]||"var(--muted)";
-      el("flow-actor").style.borderColor=colors[actor.status]||"var(--line)";
+      const resumingN=d.actors.filter(a=>a.status==="RESUMING").length;
+      const runningN=d.actors.filter(a=>a.status==="RUNNING").length;
+      // Resuming wins the headline: it is the transient one, it is the thing
+      // the demo is claiming is fast, and it is on screen for about two polls.
+      const headline=resumingN?"RESUMING":runningN?"RUNNING":"SUSPENDED";
+      const parts=[];
+      if(resumingN)parts.push(resumingN+" resuming");
+      if(runningN)parts.push(runningN+" serving");
+      el("s-actor").textContent=headline;
+      el("s-actor").style.color=colors[headline];
+      el("s-actor-label").textContent=parts.length
+        ? parts.join(" · ")+" of "+d.actors.length
+        : "all "+d.actors.length+" suspended";
+      el("flow-actor-status").textContent=headline;
+      el("flow-actor-status").style.color=colors[headline];
+      el("flow-actor").style.borderColor=colors[headline];
 
       // Light the hops that are actually carrying the request. On suspend the
       // right-hand half of the path greys out and the gateway stays lit, which
@@ -537,8 +610,8 @@ async function refresh(){
       // and no scripted sweep here. A travelling pulse would have to be
       // invented, since a turn's hops take milliseconds and this polls every
       // two seconds.
-      const resuming=actor.status==="RESUMING";
-      const running=actor.status==="RUNNING";
+      const resuming=resumingN>0;
+      const running=runningN>0;
       const reached={
         "flow-a2":resuming||running, "flow-ate":resuming||running,
         "flow-a3":running, "flow-actor":running,
@@ -585,22 +658,33 @@ async function refresh(){
     }).join("");
     el("shell").scrollTop=el("shell").scrollHeight;
 
-    // Pods
+    // Pods. The occupying actor is rendered twice, once on the header line and
+    // once in the detail line, and CSS shows exactly one of them: the operator
+    // view wants the pod IP, the recording wants all five pods visible at once
+    // and an IP nobody will read is what costs it the second row.
     el("pods").innerHTML=d.pods.length?d.pods.map(p=>{
       const active=p.activeActor!=="idle";
       const c=active?colorFor(p.activeActor):null;
       const bstyle=c?' style="border-left:4px solid '+c+'"':'';
-      return '<div class="box'+(active?" active":"")+'"'+bstyle+'><div style="display:flex;justify-content:space-between"><b>'+p.name.split("-").slice(-2).join("-")+'</b><span class="badge '+(active?"RUNNING":"SUSPENDED")+'">'+(active?"OCCUPIED":"FREE")+'</span></div><div style="font-size:11px;color:var(--muted);margin-top:4px">IP: '+p.ip+(active?' · <b style="color:'+c+'">'+p.activeActor+'</b>':'')+'</div></div>';
+      return '<div class="box'+(active?" active":"")+'"'+bstyle+'>'
+        +'<div class="box-hd"><b>'+p.name.split("-").slice(-2).join("-")+'</b>'
+        +'<span class="occ">'+(active?actorHtml(p.activeActor,c):'<span style="color:var(--muted)">no actor landed</span>')+'</span>'
+        +'<span class="badge '+(active?"RUNNING":"SUSPENDED")+'">'+(active?"OCCUPIED":"FREE")+'</span></div>'
+        +'<div class="sub">IP: '+p.ip+(active?' · '+actorHtml(p.activeActor,c):'')+'</div></div>';
     }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No worker pods found</div>';
 
-    // Actors
+    // Actors. Same markup either way; the recording layout turns this into a
+    // grid of chips so the whole fleet is on screen, because the argument is
+    // sixteen actors against five workers and a list showing three of sixteen
+    // makes it instead.
     el("actors").innerHTML=d.actors.length?d.actors.map(a=>{
       const active=a.status==="RUNNING"||a.status==="RESUMING";
       // Same color as the worker this actor occupies (colorFor keys on the actor name).
       const c=active?colorFor(a.name):null;
       const bstyle=c?' style="border-left:4px solid '+c+'"':'';
-      const nameHtml=c?'<b style="color:'+c+'">'+a.name+'</b>':'<b>'+a.name+'</b>';
-      return '<div class="box'+(active?" active":"")+'"'+bstyle+'><div style="display:flex;justify-content:space-between">'+nameHtml+'<span class="badge '+a.status+'">'+a.status+'</span></div><div style="font-size:11px;color:var(--muted);margin-top:4px">'+(active?"Pod: "+a.pod+" · IP: "+a.ip:"Snapshot stored in GCS")+'</div></div>';
+      return '<div class="box'+(active?" active":"")+'"'+bstyle+'>'
+        +'<div class="box-hd">'+actorHtml(a.name,c)+'<span class="badge '+a.status+'">'+a.status+'</span></div>'
+        +'<div class="sub">'+(active?"Pod: "+a.pod+" · IP: "+a.ip:"Snapshot stored in GCS")+'</div></div>';
     }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No actors created yet</div>';
 
     // Agent Task Timeline
@@ -613,7 +697,7 @@ async function refresh(){
       return '<div class="tl-row">'
         +'<span class="tl-time">'+t.timestamp+'</span>'
         +'<span class="tl-badge" style="color:'+bc+';border-color:'+bc+'">'+label+'</span>'
-        +'<b style="color:'+nc+'">'+escHtml(t.actor)+'</b>'
+        +actorHtml(t.actor,nc)
         +'<span class="tl-detail">'+escHtml(t.detail||"")+'</span>'
         +'</div>';
     }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No agent tasks yet. Hit Burst, or send the agent a message</div>';

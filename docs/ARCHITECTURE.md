@@ -8,7 +8,7 @@ Run many OpenClaw personal-AI-assistant instances on GKE at minimal compute cost
 
 ## Core Approach: Split the Instance in Two
 
-OpenClaw is split into two roles that run from the **same codebase**, selected by a single config field (`substrate.role`):
+OpenClaw is split into two roles that run from the **same upstream image**. The difference between them is config, not code: the gateway loads the substrate plugin, the actor does not. Nothing is forked, and neither side is a Substrate-specific build.
 
 - **Gateway (always-on, ~128–256 MB):** holds the channel connections and routes messages. It is cheap because it spends its life waiting on I/O.
 - **Agent Actor (Substrate-managed, suspendable):** runs the expensive agentic loop: LLM calls, tool use, memory, skills. It is suspended to a gVisor snapshot when idle (driven by the gateway) and auto-resumes on demand.

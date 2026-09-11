@@ -70,6 +70,10 @@ data:
         "auth": { "mode": "token" }
       },
       "channels": {
-        "whatsapp": {}
+        "whatsapp": {
+          "enabled": true,
+          "dmPolicy": "open",
+          "allowFrom": ["*"]
+        }
       }
     }

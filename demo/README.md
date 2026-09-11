@@ -200,13 +200,41 @@ rebuild with `BUILD_IMAGES=true`, and skip the dashboard with
 
 ## Step 4: Link WhatsApp
 
+Check the channel came up enabled first. If it says `not configured`, the config in
+Step 2 did not land and the QR below will have nothing to attach to:
+
 ```bash
-kubectl -n openclaw port-forward svc/openclaw-gateway 18789:18789
+kubectl -n openclaw exec deploy/openclaw-gateway -- \
+  node /app/openclaw.mjs channels list
+# WhatsApp default: installed, enabled, not linked
 ```
 
-Open <http://localhost:18789>, log in with the gateway token the script printed, and
-scan the QR shown by the WhatsApp plugin: **WhatsApp > Settings > Linked Devices >
-Link a Device**. Credentials persist on the gateway PVC, so you only scan once.
+Then print a QR in your own terminal and scan it from the phone:
+
+```bash
+kubectl -n openclaw exec -it deploy/openclaw-gateway -- \
+  node /app/openclaw.mjs channels login --channel whatsapp
+```
+
+**WhatsApp > Settings > Linked Devices > Link a Device.** The QR rotates every
+20 seconds or so and a new one reprints, so a missed scan costs nothing. When it
+links, `channels list` reads `linked`. Credentials persist on the gateway PVC, so
+you only scan once, and a gateway restart keeps the pairing.
+
+The Control UI does the same thing if you would rather click: port-forward
+`svc/openclaw-gateway 18789:18789`, open <http://localhost:18789> and log in with
+the gateway token the script printed. It has to be localhost, not the
+LoadBalancer IP, because `gateway.controlUi.allowedOrigins` only lists
+`http://localhost:18789`.
+
+> **This account answers anyone who messages it.** The demo config sets
+> `channels.whatsapp.dmPolicy: "open"` with `allowFrom: ["*"]`, which is what makes
+> the recording a single scan and a single message rather than a pairing dance.
+> Link a spare number, not a personal one. To lock it down instead, drop
+> `dmPolicy` back to its `"pairing"` default, or put your own number in
+> `allowFrom`. Note that `"open"` without `allowFrom: ["*"]` silently drops every
+> DM: the gateway logs one config warning at startup and then looks perfectly
+> healthy while nothing arrives.
 
 ## Step 5: Try it and watch suspend/resume
 
@@ -240,6 +268,18 @@ onto the pool.
 ```bash
 kubectl -n openclaw get svc openclaw-dashboard   # wait for EXTERNAL-IP, then open :8090
 ```
+
+> **Suspend by hand after a burst.** Actors woken by Burst stay RUNNING until you
+> say otherwise, and they will still be RUNNING the next morning. Nothing is
+> wedged: the idle clock lives in the gateway and only follows conversations the
+> gateway drove, and Burst goes straight at the actor's `/healthz`. So the
+> pre-flight before a recording is a loop over the fleet, and it is worth reading
+> the output rather than discarding it:
+>
+> ```bash
+> for i in $(seq 1 15); do kubectl ate suspend actor oc-agent-$i -a openclaw-demo; done
+> kubectl ate get workers   # every worker FREE before you start
+> ```
 
 It only reads the cluster, and it reads nothing about WhatsApp: link state, the
 message thread and the pairing button all used to live here, all of it a second

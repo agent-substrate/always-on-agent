@@ -60,6 +60,10 @@ type SubstrateConfig = {
   kubectlAtePath?: string;
   // Idle window before the gateway suspends a conversation's actor.
   idleTimeoutSeconds?: number;
+  // How often the idle sweep runs. The real delay before a suspend is the
+  // timeout plus up to one poll interval, so a 5s poll quietly doubles a 5s
+  // timeout. Worth turning down when the timeout is short.
+  idlePollMs?: number;
   // ateapi control-plane address.
   ateapiAddress?: string;
 };
@@ -89,6 +93,7 @@ const plugin = {
         atespace: cfg.atespace,
         client,
         idleTimeoutSeconds: cfg.idleTimeoutSeconds ?? 120,
+        pollMs: cfg.idlePollMs,
       });
       const runtime = createSubstrateAcpRuntime({
         atespace: cfg.atespace,

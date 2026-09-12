@@ -27,7 +27,8 @@ data:
             "config": {
               "role": "gateway",
               "atespace": "openclaw-demo",
-              "idleTimeoutSeconds": 10,
+              "idleTimeoutSeconds": 2,
+              "idlePollMs": 250,
               "template": "openclaw-agent",
               "actorDomain": "actors.resources.substrate.ate.dev",
               "actorToken": "${OPENCLAW_GATEWAY_TOKEN}",

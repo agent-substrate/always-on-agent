@@ -124,10 +124,10 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       initContainers:
-        # Copy the gateway config onto the PVC, then install the substrate plugin
+        # Copy the gateway config onto the PVC and install the substrate plugin
         # into the PVC state dir (its registry lives under .openclaw, so it must be
-        # installed at runtime, not baked into the image). Config is copied first so
-        # `plugins install`'s config validation (which requires role) passes.
+        # installed at runtime, not baked into the image). See the ordering note in
+        # the script below: the install runs either side of the copy.
         #
         # HOME points *into* the PVC rather than at it, so ~/.openclaw is a
         # subdirectory of the mount instead of the mount root. OpenClaw writes its
@@ -143,8 +143,25 @@ spec:
           args:
             - |
               mkdir -p /home/node/state/.openclaw
-              cp /config/openclaw.json /home/node/state/.openclaw/openclaw.json
-              node /app/openclaw.mjs plugins install /app/extensions/substrate --force --accept-capabilities
+              # The substrate plugin installs twice, on purpose, either side of
+              # the config copy. `plugins install` does two things: it writes the
+              # plugin's files to the PVC, including the manifest that defines
+              # the schema its own config block is validated against, and it
+              # registers the plugin in openclaw.json. Neither order works alone.
+              #
+              # Copy first and a config using a newly added setting is rejected
+              # by the schema still on the PVC, which aborts the install that
+              # would have shipped the new schema. The pod then CrashLoopBackOffs
+              # forever on a config it will never accept, with a good image.
+              #
+              # Install first and the copy lands on top of the registration, so
+              # the gateway starts with the plugin absent. That one is worse,
+              # because it starts cleanly: the log reads "3 plugins" instead of
+              # four and everything else looks normal, while every conversation
+              # quietly runs on the gateway instead of an actor.
+              #
+              # So: refresh the schema, copy, then register against it.
+              node /app/openclaw.mjs plugins install /app/extensions/substrate --force --accept-capabilities || true
               # WhatsApp is no longer bundled in the OpenClaw image; it is an
               # external ClawHub plugin, and its version has to track the base
               # image (the floating `@openclaw/whatsapp` refuses to install
@@ -154,6 +171,12 @@ spec:
               # dependencies needs more memory than the gateway's limit allows,
               # and it is skipped if already present on the PVC.
               node /app/openclaw.mjs plugins install clawhub:@openclaw/whatsapp@2026.8.2 --accept-capabilities || true
+              cp /config/openclaw.json /home/node/state/.openclaw/openclaw.json
+              # Second half of the pair above: re-register substrate against the
+              # config that was just copied in. No `|| true` here. If this fails
+              # the gateway would come up without the plugin and answer every
+              # message itself, which is far harder to spot than a crash loop.
+              node /app/openclaw.mjs plugins install /app/extensions/substrate --force --accept-capabilities
               # A PVC that was written by an older OpenClaw carries a workspace
               # layout the current one refuses to start against: it exits with
               # "Legacy workspace setup state requires migration" and the pod

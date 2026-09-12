@@ -56,9 +56,15 @@
       },
       "idleTimeoutSeconds": {
         "type": "number",
-        "minimum": 5,
+        "minimum": 1,
         "default": 120,
         "description": "Gateway role: seconds of inactivity before the gateway suspends a conversation's actor."
+      },
+      "idlePollMs": {
+        "type": "number",
+        "minimum": 100,
+        "default": 5000,
+        "description": "Gateway role: how often the idle sweep runs. A suspend lands up to one poll interval after the timeout expires, so leave this well under idleTimeoutSeconds."
       },
       "ateapiAddress": {
         "type": "string",

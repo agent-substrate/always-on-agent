@@ -71,6 +71,26 @@ const state = {
 
 const MAX_EVENTS = 200;
 
+// Rolling window for the achieved-density figure. Ten minutes is long enough
+// that a single conversation turn does not swing it and short enough that it
+// still reflects what the fleet is doing now, rather than everything since the
+// pod started.
+const DENSITY_WINDOW_MS = 10 * 60 * 1000;
+
+// Occupancy samples, one per sync, trimmed to the window above.
+//
+// Deriving a number from a polling loop is how the old "Worker Swap Latency"
+// tile got it wrong, so it is worth being precise about why this one is sound.
+// A latency is the gap between two instants, and sampling it every 2s quantises
+// it to 2s and puts a floor under it. Occupancy is a state held over time, and
+// integrating it is a Riemann sum whose error averages out the longer you
+// watch. The one thing that would break it is a busy interval shorter than the
+// poll; a turn holds a worker for ~10s, so it lands in about five samples.
+//
+// Deliberately not inside `state`: /api/state spreads that object wholesale and
+// this would ship 300 entries of noise to the browser every two seconds.
+let occupancySamples = [];
+
 function runCmd(cmd, timeoutMs = 10000) {
   return new Promise((resolve) => {
     exec(cmd, { timeout: timeoutMs }, (error, stdout, stderr) => {
@@ -208,6 +228,13 @@ async function syncState() {
     const activePods = state.pods.filter((p) => p.activeActor !== "idle").length;
     state.stats.totalLogicalActiveSec += runningActors * elapsed;
     state.stats.totalPhysicalActiveSec += activePods * elapsed;
+
+    // Sample for the rolling density window. `elapsed` is carried on the sample
+    // rather than assumed, because a slow kubectl-ate call stretches the gap and
+    // that interval genuinely was longer.
+    occupancySamples.push({ t: now, dt: elapsed, busyWorkers: activePods, runningActors });
+    const cutoff = now - DENSITY_WINDOW_MS;
+    while (occupancySamples.length && occupancySamples[0].t < cutoff) occupancySamples.shift();
   } catch (e) {
     addEvent("sys", `Sync error: ${e.message}`);
   }
@@ -215,10 +242,6 @@ async function syncState() {
 }
 
 app.get("/api/state", (c) => {
-  const density =
-    state.stats.totalPhysicalActiveSec > 0
-      ? state.stats.totalLogicalActiveSec / state.stats.totalPhysicalActiveSec
-      : 1.0;
   // Total managed logical actors (any state, excluding the golden template) vs the
   // physical worker pool: the multiplexing/oversubscription story. Most actors sit
   // suspended in GCS; the running ones share the workers on demand.
@@ -232,11 +255,54 @@ app.get("/api/state", (c) => {
   // With Substrate you pay only for the currently-occupied worker footprint.
   const footprint = Math.max(1, occupiedWorkers);
   const costReductionX = Math.max(1, managedActors) / footprint;
+
+  // Achieved density: the measured version of the ratio on the headline card.
+  //
+  // What was here before was totalLogicalActiveSec / totalPhysicalActiveSec,
+  // running actors over busy workers. A worker holds exactly one actor at a
+  // time, so that quotient is pinned at 1.00 by construction and it duly read
+  // 1.00 forever. It was never measuring oversubscription, it was measuring an
+  // invariant of the scheduler.
+  //
+  // The quantity that answers the question is how much worker the fleet
+  // actually draws. Integrate busy workers over the window for mean demand,
+  // then divide the managed actor count by it. That is exactly 1/duty-cycle,
+  // which is the honest way to read it and the reason the average alone is a
+  // weak claim: it grows without bound as the workload gets sparser, so a big
+  // number here is a statement about how idle the agents are, not about how
+  // good the packing is. Peak is what actually sizes a fleet, so it ships
+  // beside it and the two should always be quoted together.
+  let windowSec = 0;
+  let busyWorkerSec = 0;
+  let runningActorSec = 0;
+  let peakBusyWorkers = 0;
+  for (const s of occupancySamples) {
+    windowSec += s.dt;
+    busyWorkerSec += s.busyWorkers * s.dt;
+    runningActorSec += s.runningActors * s.dt;
+    if (s.busyWorkers > peakBusyWorkers) peakBusyWorkers = s.busyWorkers;
+  }
+  const avgBusyWorkers = windowSec > 0 ? busyWorkerSec / windowSec : 0;
+  // Null rather than Infinity when the fleet has been asleep for the whole
+  // window. There is no ratio to report from zero worker-seconds, and the UI
+  // says so rather than printing a number nobody can defend.
+  const achievedRatio =
+    avgBusyWorkers > 0 ? `${(managedActors / avgBusyWorkers).toFixed(1)}:1` : null;
+  const dutyCyclePct =
+    managedActors > 0 && windowSec > 0
+      ? ((100 * runningActorSec) / (managedActors * windowSec)).toFixed(2)
+      : "0.00";
+
   return c.json({
     ...state,
     stats: {
       ...state.stats,
-      density: Math.max(1.0, density).toFixed(2),
+      achievedRatio,
+      avgBusyWorkers: avgBusyWorkers.toFixed(2),
+      peakBusyWorkers,
+      dutyCyclePct,
+      densityWindowMin: Math.round(DENSITY_WINDOW_MS / 60000),
+      observedSec: Math.round(windowSec),
       savings: (100 - 100 / costReductionX).toFixed(1),
       managedActors,
       runningActors,
@@ -348,9 +414,9 @@ h1 span{font-size:11px;color:var(--muted);font-weight:400;vertical-align:middle;
 .card .desc{font-size:11px;color:var(--muted);margin-bottom:10px;font-style:italic}
 .row{display:grid;gap:16px;margin-bottom:16px}
 .row-4{grid-template-columns:repeat(4,1fr)}
-/* Efficiency stats: two cards for the operator, one once the demo layout hides
-   Economic Savings. Its own class so the count can follow what is visible. */
-.row-eff{grid-template-columns:repeat(2,1fr)}
+/* Efficiency stats: three cards for the operator, two once the demo layout
+   hides Economic Savings. Its own class so the count follows what is visible. */
+.row-eff{grid-template-columns:repeat(3,1fr)}
 .row-2{grid-template-columns:1fr 1fr}
 .row-1{grid-template-columns:1fr}
 .stat-card{text-align:center;padding:16px}
@@ -413,9 +479,8 @@ body.demo header{margin-bottom:12px}
 body.demo header h1{font-size:18px}
 body.demo .demo-hide{display:none}
 body.demo .row{gap:12px;margin-bottom:12px}
-/* Economic Savings is hidden here, so the ratio is the only card left and it
-   takes the full width rather than sitting in half a row next to a hole. */
-body.demo .row-eff{grid-template-columns:1fr}
+/* Economic Savings is hidden here, so two cards are left, not three. */
+body.demo .row-eff{grid-template-columns:repeat(2,1fr)}
 body.demo .card{padding:12px}
 body.demo .card .desc{display:none}
 body.demo .stat-card{padding:8px}
@@ -506,6 +571,13 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
         <div class="stat-label">Oversubscription Ratio</div>
         <div class="stat-val" id="eff-ratio" style="color:var(--cyan);font-size:24px">--</div>
         <div class="stat-label" id="eff-ratio-sub">logical actors : busy workers</div>
+      </div>
+      <!-- The measured counterpart to the ratio on its left. That one is
+           inventory, this one is what the fleet actually drew. -->
+      <div class="stat-card" style="padding:10px">
+        <div class="stat-label">Achieved Density</div>
+        <div class="stat-val" id="eff-density" style="color:var(--green);font-size:24px">--</div>
+        <div class="stat-label" id="eff-density-sub">measured, rolling window</div>
       </div>
       <!-- A derived number presented as a measurement, and the same fact as the
            oversubscription ratio next to it in a form that is harder to defend.
@@ -668,7 +740,17 @@ async function refresh(){
 
     // Operational efficiency
     el("eff-ratio").textContent=d.stats.oversubscription||"--";
-    el("eff-ratio-sub").textContent=d.stats.managedActors+" managed · "+d.stats.runningActors+" running on "+d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers+" workers · avg "+d.stats.density+"× over time";
+    el("eff-ratio-sub").textContent=d.stats.managedActors+" managed · "+d.stats.runningActors+" running on "+d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers+" workers";
+    // Peak rides in the sub-label on purpose. The headline ratio is the inverse
+    // of the duty cycle and flatters a sleepy fleet, so the number that sizes
+    // the pool has to be visible in the same glance.
+    if(d.stats.achievedRatio){
+      el("eff-density").textContent=d.stats.achievedRatio;
+      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · avg "+d.stats.avgBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy · peak "+d.stats.peakBusyWorkers+" · duty "+d.stats.dutyCyclePct+"%";
+    }else{
+      el("eff-density").textContent="--";
+      el("eff-density-sub").textContent="fleet idle for the last "+d.stats.densityWindowMin+"m · no worker time to divide";
+    }
     el("eff-savings").textContent=d.stats.savings+"%";
     el("eff-savings-sub").textContent="~"+d.stats.costReductionX+"× fewer pods vs always-on";
 

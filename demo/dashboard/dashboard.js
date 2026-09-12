@@ -37,6 +37,27 @@ const ATESPACES = (process.env.ATESPACES || "openclaw-demo").split(",").map(s =>
 //
 // What is left is what only this can show: which worker pod holds which actor,
 // and what the fleet did over time. One source, read-only, nothing to drift.
+
+// Control-plane handler latency, from the glutton_1k_users profile on d016eddc
+// (early August): 1,000 actors on 1,000 c3-standard-4 workers over ten minutes,
+// zero failures. Resume P50 310ms / P95 380 / P99 600 over n=125,428. Suspend
+// P50 290ms / P95 360 / P99 440 over n=126,375. Cold start P50 220ms.
+//
+// These are ResumeActor and SuspendActor server handler time, taken from the
+// x-server-elapsed-us trailer, which the harness has preferred since 30 June;
+// the interceptor emitting it is registered unconditionally, so the client
+// stopwatch fallback never fires. That bracket is the whole point. It is NOT
+// the end-to-end wake, which also carries the sandbox restore and lands in
+// seconds. Quoting one as the other is the mistake this constant exists to stop.
+//
+// Hardcoded rather than measured live on purpose: this demo cluster has five
+// workers, kubectl-ate adds ~1.3s of port-forward setup per call that swamps a
+// 300ms handler, and n=5 on a laptop is not a number anyone should show. The
+// oversubscription profile is separate: glutton_oversubscribe_15_users on
+// 6659cd2b (4 September), 15 actors on 10 workers, P50 290 / P95 380 / P99 540,
+// max 1,184ms over n=350.
+const CONTROL_PLANE_P50_MS = { resume: 310, suspend: 290, samples: "125k" };
+
 const state = {
   pods: [],
   actors: [],
@@ -48,9 +69,11 @@ const state = {
     totalSuspends: 0,
     totalLogicalActiveSec: 0,
     totalPhysicalActiveSec: 0,
-    // Resume-on-demand latency, measured from the request that causes the wake
-    // to the response that proves the actor is serving. Only the burst path can
-    // populate these, because only it knows t0 exactly. See fireBurst.
+    // End-to-end wake: the request that causes the resume through to the
+    // response that proves the actor is serving. Not the same quantity as the
+    // control-plane figures in CONTROL_PLANE_P50_MS below, and a demo cluster of
+    // five workers is not a sample worth showing, so this stays off camera and
+    // is kept for the event stream only. See fireBurst.
     lastSwapLatencyMs: 0,
     avgSwapLatencyMs: 0,
     swapSamples: 0,
@@ -235,6 +258,9 @@ app.get("/api/state", (c) => {
       costReductionX: costReductionX.toFixed(1),
       swapLatencySec: (state.stats.lastSwapLatencyMs / 1000).toFixed(1),
       avgSwapLatencySec: (state.stats.avgSwapLatencyMs / 1000).toFixed(1),
+      cpResumeMs: CONTROL_PLANE_P50_MS.resume,
+      cpSuspendMs: CONTROL_PLANE_P50_MS.suspend,
+      cpSamples: CONTROL_PLANE_P50_MS.samples,
     },
   });
 });
@@ -493,9 +519,9 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
         <div class="stat-label" id="eff-ratio-sub">logical actors : busy workers</div>
       </div>
       <div class="stat-card" style="padding:10px">
-        <div class="stat-label">Resume on Demand</div>
+        <div class="stat-label">Resume / Suspend</div>
         <div class="stat-val" id="eff-latency" style="color:var(--green);font-size:24px">--</div>
-        <div class="stat-label" id="eff-latency-sub">request → serving</div>
+        <div class="stat-label" id="eff-latency-sub">control plane</div>
       </div>
       <!-- A derived number presented as a measurement, and the same fact as the
            oversubscription ratio next to it in a form that is harder to defend.
@@ -659,12 +685,14 @@ async function refresh(){
     // Operational efficiency
     el("eff-ratio").textContent=d.stats.oversubscription||"--";
     el("eff-ratio-sub").textContent=d.stats.managedActors+" managed · "+d.stats.runningActors+" running on "+d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers+" workers · avg "+d.stats.density+"× over time";
-    if(d.stats.swapSamples>0){
-      el("eff-latency").textContent=d.stats.swapLatencySec+"s";
-      el("eff-latency-sub").textContent="last · avg "+d.stats.avgSwapLatencySec+"s over "+d.stats.swapSamples;
+    // Fixed figures, not a live reading. See CONTROL_PLANE_P50_MS on the server
+    // for the profile, the commit and why this is not measured here.
+    if(d.stats.cpResumeMs){
+      el("eff-latency").textContent=d.stats.cpResumeMs+" / "+d.stats.cpSuspendMs+" ms";
+      el("eff-latency-sub").textContent="P50 · 1,000 actors · n="+d.stats.cpSamples;
     }else{
       el("eff-latency").textContent="-";
-      el("eff-latency-sub").textContent="run a burst to measure";
+      el("eff-latency-sub").textContent="control plane";
     }
     el("eff-savings").textContent=d.stats.savings+"%";
     el("eff-savings-sub").textContent="~"+d.stats.costReductionX+"× fewer pods vs always-on";

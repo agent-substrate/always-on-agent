@@ -77,6 +77,10 @@ const MAX_EVENTS = 200;
 // pod started.
 const DENSITY_WINDOW_MS = 10 * 60 * 1000;
 
+// Least busy worker-time in the window before a density is worth printing.
+// See the achievedRatio note on /api/state for why zero is not the threshold.
+const MIN_BUSY_WORKER_SEC = 60;
+
 // Occupancy samples, one per sync, trimmed to the window above.
 //
 // Deriving a number from a polling loop is how the old "Worker Swap Latency"
@@ -283,11 +287,20 @@ app.get("/api/state", (c) => {
     if (s.busyWorkers > peakBusyWorkers) peakBusyWorkers = s.busyWorkers;
   }
   const avgBusyWorkers = windowSec > 0 ? busyWorkerSec / windowSec : 0;
-  // Null rather than Infinity when the fleet has been asleep for the whole
-  // window. There is no ratio to report from zero worker-seconds, and the UI
-  // says so rather than printing a number nobody can defend.
+  // Null rather than a number when the window holds almost no work.
+  //
+  // Guarding on zero alone was not enough, and the failure is loud rather than
+  // quiet: one short wake ten minutes ago leaves mean demand at 0.01 workers
+  // and the card reads 1337:1. That is arithmetic on six worker-seconds, not a
+  // result, and it is the most quotable thing on the screen. Dividing by a
+  // small measured number needs enough denominator to be worth printing.
+  //
+  // Sixty worker-seconds is one worker busy for a minute, or about six agent
+  // turns. Below that the honest output is that nothing has happened yet.
   const achievedRatio =
-    avgBusyWorkers > 0 ? `${(managedActors / avgBusyWorkers).toFixed(1)}:1` : null;
+    busyWorkerSec >= MIN_BUSY_WORKER_SEC && avgBusyWorkers > 0
+      ? `${(managedActors / avgBusyWorkers).toFixed(1)}:1`
+      : null;
   const dutyCyclePct =
     managedActors > 0 && windowSec > 0
       ? ((100 * runningActorSec) / (managedActors * windowSec)).toFixed(2)
@@ -749,7 +762,7 @@ async function refresh(){
       el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · avg "+d.stats.avgBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy · peak "+d.stats.peakBusyWorkers+" · duty "+d.stats.dutyCyclePct+"%";
     }else{
       el("eff-density").textContent="--";
-      el("eff-density-sub").textContent="fleet idle for the last "+d.stats.densityWindowMin+"m · no worker time to divide";
+      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · too little worker time to divide · peak "+d.stats.peakBusyWorkers;
     }
     el("eff-savings").textContent=d.stats.savings+"%";
     el("eff-savings-sub").textContent="~"+d.stats.costReductionX+"× fewer pods vs always-on";

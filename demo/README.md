@@ -218,8 +218,17 @@ kubectl -n openclaw exec -it deploy/openclaw-gateway -- \
 
 **WhatsApp > Settings > Linked Devices > Link a Device.** The QR rotates every
 20 seconds or so and a new one reprints, so a missed scan costs nothing. When it
-links, `channels list` reads `linked`. Credentials persist on the gateway PVC, so
-you only scan once, and a gateway restart keeps the pairing.
+links, `channels list` reads `linked`. Credentials persist on the gateway PVC at
+`.openclaw/credentials/whatsapp/default`, so you only scan once.
+
+> **Restart the gateway once after the scan.** WhatsApp answers a fresh pairing
+> with `code 515`, which asks the client to reconnect. On this build the log stops
+> at `waiting for creds to save…` and the socket never comes back, while
+> `channels list` already reads `linked` off the saved credentials. So the channel
+> looks paired and is not receiving anything. `kubectl -n openclaw rollout restart
+> deploy/openclaw-gateway` picks the credentials back up, and the line you want in
+> the log is `Listening for WhatsApp inbound messages`. Treat that line, not
+> `linked`, as the signal the channel is live.
 
 The Control UI does the same thing if you would rather click: port-forward
 `svc/openclaw-gateway 18789:18789`, open <http://localhost:18789> and log in with

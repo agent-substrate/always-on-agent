@@ -106,16 +106,19 @@ function runCmd(cmd, timeoutMs = 10000) {
   });
 }
 
+// Epoch milliseconds, not a formatted string. The server is a pod and its
+// clock is UTC, so anything formatted here reads an hour or eight away from the
+// clock in the dashboard header and the one in a terminal beside it. Three
+// disagreeing clocks on one screen is a distraction in a recording whose whole
+// point is that two independent views agree. The browser formats it.
 function addEvent(module, message) {
-  const ts = new Date().toISOString().slice(11, 19);
-  state.events.push({ timestamp: ts, module, message });
+  state.events.push({ at: Date.now(), module, message });
   if (state.events.length > MAX_EVENTS) state.events.shift();
 }
 
 // Agent-task lifecycle timeline (per-actor resume→active→suspend transitions).
 function addTimeline(actor, event, detail) {
-  const ts = new Date().toISOString().slice(11, 19);
-  state.timeline.unshift({ timestamp: ts, actor, event, detail });
+  state.timeline.unshift({ at: Date.now(), actor, event, detail });
   if (state.timeline.length > 60) state.timeline.pop();
 }
 
@@ -662,6 +665,11 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
 <script>
 // Stable per-actor color so an actor and the worker it occupies visually match.
 const ACTOR_PALETTE=["#5ac8fa","#ff6b9d","#ffd60a","#30d158","#bf5af2","#ff9f0a","#64d2ff","#ff375f"];
+// Local wall-clock, to match the header and whatever terminal is on screen.
+function clock(ms){
+  return new Date(ms).toLocaleTimeString([],{hour12:false,hour:"2-digit",minute:"2-digit",second:"2-digit"});
+}
+
 function colorFor(name){
   if(!name||name==="idle")return null;
   let h=0;for(let i=0;i<name.length;i++){h=(h*31+name.charCodeAt(i))>>>0;}
@@ -770,7 +778,7 @@ async function refresh(){
     // Event stream
     el("shell").innerHTML=d.events.map(e=>{
       const cls=e.module||"sys";
-      return '<div class="shell-line '+cls+'">['+e.timestamp+'] ['+cls.toUpperCase()+'] '+e.message+'</div>';
+      return '<div class="shell-line '+cls+'">['+clock(e.at)+'] ['+cls.toUpperCase()+'] '+e.message+'</div>';
     }).join("");
     el("shell").scrollTop=el("shell").scrollHeight;
 
@@ -811,7 +819,7 @@ async function refresh(){
       const nc=colorFor(t.actor)||"var(--text)";
       const label=tlLabels[t.event]||t.event.toUpperCase();
       return '<div class="tl-row">'
-        +'<span class="tl-time">'+t.timestamp+'</span>'
+        +'<span class="tl-time">'+clock(t.at)+'</span>'
         +'<span class="tl-badge" style="color:'+bc+';border-color:'+bc+'">'+label+'</span>'
         +actorHtml(t.actor,nc)
         +'<span class="tl-detail">'+escHtml(t.detail||"")+'</span>'

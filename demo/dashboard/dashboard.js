@@ -48,6 +48,9 @@ const state = {
     totalSuspends: 0,
     totalLogicalActiveSec: 0,
     totalPhysicalActiveSec: 0,
+    // Resume-on-demand latency, measured from the request that causes the wake
+    // to the response that proves the actor is serving. Only the burst path can
+    // populate these, because only it knows t0 exactly. See fireBurst.
     lastSwapLatencyMs: 0,
     avgSwapLatencyMs: 0,
     swapSamples: 0,
@@ -126,31 +129,23 @@ async function syncState() {
 
     state.actors = liveActors;
 
-    // Track status transitions → resume/suspend counts + worker-swap latency
-    // (time from restore-on-demand start to the actor serving = RESUMING→RUNNING).
+    // Track status transitions → resume/suspend counts, and nothing else. This
+    // loop deliberately does not time anything. It runs on a 2s poll, so the
+    // only thing it can measure is the gap between the poll that first saw
+    // RESUMING and the poll that first saw RUNNING. That is quantised to the
+    // poll interval, can never report less than one interval no matter how fast
+    // the restore is, and wanders by seconds on sampling luck alone. It was
+    // being displayed as "Worker Swap Latency", which made a sampling artifact
+    // look like a measurement. Real timings come from fireBurst, which knows t0.
     state._prev = state._prev || {};
-    state._resumeStart = state._resumeStart || {};
     for (const a of liveActors) {
       const prev = state._prev[a.name];
       if (prev !== a.status) {
         if (a.status === "RESUMING") {
-          state._resumeStart[a.name] = Date.now();
           if (prev) addTimeline(a.name, "resume", "restore-on-demand from GCS snapshot");
         } else if (a.status === "RUNNING" && (prev === "RESUMING" || prev === "SUSPENDED")) {
           state.stats.totalResumes++;
-          const t0 = state._resumeStart[a.name];
-          if (t0) {
-            const ms = Date.now() - t0;
-            state.stats.lastSwapLatencyMs = ms;
-            state.stats.swapSamples++;
-            state.stats.avgSwapLatencyMs =
-              (state.stats.avgSwapLatencyMs * (state.stats.swapSamples - 1) + ms) /
-              state.stats.swapSamples;
-            delete state._resumeStart[a.name];
-            addTimeline(a.name, "active", `restored & serving · ${(ms / 1000).toFixed(1)}s swap`);
-          } else {
-            addTimeline(a.name, "active", "serving");
-          }
+          addTimeline(a.name, "active", "restored & serving");
         } else if (a.status === "SUSPENDED" && (prev === "RUNNING" || prev === "SUSPENDING")) {
           state.stats.totalSuspends++;
           addTimeline(a.name, "suspend", "checkpointed to GCS · worker freed");
@@ -279,8 +274,23 @@ app.post("/api/burst", async (c) => {
   // atenet routes <actor>.<atespace>.actors.resources.substrate.ate.dev to a worker.
   for (const name of names) {
     const url = `http://${name}.${atespace}.actors.resources.substrate.ate.dev/healthz`;
+    // This request is what causes the wake, and the response is the actor
+    // serving, so the round trip is the resume-on-demand latency with nothing
+    // inferred. It is the only place in the dashboard that can honestly time a
+    // resume: everywhere else is reading a 2s poll.
+    const t0 = Date.now();
     fetch(url, { signal: AbortSignal.timeout(120000) })
       .then((r) => {
+        // Only a served response is a sample. A 503 measures how fast the pool
+        // said no, and a 504 is the timeout, not the restore.
+        if (r.ok) {
+          const ms = Date.now() - t0;
+          state.stats.lastSwapLatencyMs = ms;
+          state.stats.swapSamples++;
+          state.stats.avgSwapLatencyMs =
+            (state.stats.avgSwapLatencyMs * (state.stats.swapSamples - 1) + ms) /
+            state.stats.swapSamples;
+        }
         // An ateom hosts one actor at a time, so a burst wider than the worker
         // pool gets the excess refused with a 503 rather than queued. A resolved
         // response isn't a thrown error, so this used to vanish into the .catch()
@@ -401,7 +411,15 @@ body.demo .flow-node{min-width:106px;padding:8px 12px}
    five workers and sixteen actors. A panel that has to be scrolled to see the
    current state is the same as a panel that is wrong. */
 body.demo .ats{display:none}
-body.demo #pods,body.demo #actors{max-height:228px;overflow-y:auto}
+/* No max-height on the fleet panel. It used to be capped at 228px, which fits
+   the four rows sixteen actors make at four across. There are seventeen: the
+   sixteen burst actors plus one conversation actor per chat, and that fifth row
+   sat under the fold behind a scrollbar. Browser zoom does not help, because the
+   cap is in CSS pixels and shrinks with the content. Burst is the one beat where
+   the whole grid lighting up is the payoff, so the panel sizes to its content and
+   the row it shares stretches to match. */
+body.demo #pods{max-height:228px;overflow-y:auto}
+body.demo #actors{max-height:none;overflow:visible}
 body.demo #pods .box{padding:7px 10px;margin-bottom:6px}
 body.demo #pods .box .occ{display:block;flex:1;text-align:right}
 body.demo #pods .box .sub{display:none}
@@ -475,9 +493,9 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
         <div class="stat-label" id="eff-ratio-sub">logical actors : busy workers</div>
       </div>
       <div class="stat-card" style="padding:10px">
-        <div class="stat-label">Worker Swap Latency</div>
+        <div class="stat-label">Resume on Demand</div>
         <div class="stat-val" id="eff-latency" style="color:var(--green);font-size:24px">--</div>
-        <div class="stat-label" id="eff-latency-sub">snapshot → serving</div>
+        <div class="stat-label" id="eff-latency-sub">request → serving</div>
       </div>
       <!-- A derived number presented as a measurement, and the same fact as the
            oversubscription ratio next to it in a form that is harder to defend.
@@ -646,7 +664,7 @@ async function refresh(){
       el("eff-latency-sub").textContent="last · avg "+d.stats.avgSwapLatencySec+"s over "+d.stats.swapSamples;
     }else{
       el("eff-latency").textContent="-";
-      el("eff-latency-sub").textContent="awaiting a resume";
+      el("eff-latency-sub").textContent="run a burst to measure";
     }
     el("eff-savings").textContent=d.stats.savings+"%";
     el("eff-savings-sub").textContent="~"+d.stats.costReductionX+"× fewer pods vs always-on";

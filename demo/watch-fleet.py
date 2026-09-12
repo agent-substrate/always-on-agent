@@ -189,6 +189,9 @@ def main():
     p.add_argument("--interval", type=float, default=1.5)
     p.add_argument("--no-color", action="store_true")
     p.add_argument("--once", action="store_true", help="render one frame and exit")
+    p.add_argument("--title", default="control plane",
+                   help="terminal window title; the default replaces a cwd that "
+                        "would otherwise sit in the title bar for the whole recording")
     args = p.parse_args()
 
     s = Style(not args.no_color and sys.stdout.isatty())
@@ -199,6 +202,18 @@ def main():
     # pane is stale for no reason. Overlapped, a frame costs about as much as
     # one call.
     pool = ThreadPoolExecutor(max_workers=2)
+
+    if not args.once and sys.stdout.isatty():
+        # Wipe the screen and scrollback before the first frame, and rename the
+        # window. The first frame takes about as long as one CLI call, and until
+        # it lands the shell prompt and the command that started this are still
+        # on screen; the prompt carries a username, a hostname and a working
+        # directory, and the title bar carries the directory for the whole
+        # recording. Painting over them a second and a half later is too late if
+        # that second and a half is the cold open.
+        sys.stdout.write("\033[2J\033[3J\033[H")
+        sys.stdout.write(f"\033]0;{args.title}\007")
+        sys.stdout.flush()
 
     try:
         while True:

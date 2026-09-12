@@ -45,7 +45,7 @@ data:
       "agents": {
         "defaults": { "model": "google/gemini-3-flash-preview" }
       },
-      "cron": { "enabled": true },
+      "cron": { "enabled": false },
       "bindings": [
         {
           "type": "acp",
@@ -53,7 +53,7 @@ data:
           "match": {
             "channel": "whatsapp",
             "accountId": "default",
-            "peer": { "kind": "direct", "id": "*" }
+            "peer": { "kind": "direct", "id": "REPLACE_WITH_WHATSAPP_PEER" }
           },
           "acp": { "backend": "substrate" }
         }

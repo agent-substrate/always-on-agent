@@ -137,7 +137,8 @@ render() {
       -e "s|REPLACE_WITH_GEMINI_API_KEY|$GEMINI_API_KEY|g" \
       -e "s|REPLACE_WITH_GATEWAY_TOKEN|$GATEWAY_TOKEN|g" \
       -e "s|REPLACE_WITH_DASHBOARD_DIGEST|$DASHBOARD_DIGEST|g" \
-      -e "s|REPLACE_WITH_ATEOM_IMAGE|$ATEOM_IMAGE|g" "$1"
+      -e "s|REPLACE_WITH_ATEOM_IMAGE|$ATEOM_IMAGE|g" \
+      -e "s|REPLACE_WITH_WHATSAPP_PEER|$WHATSAPP_PEER|g" "$1"
 }
 
 # --- [3/8] Namespace + secrets ---
@@ -171,7 +172,14 @@ echo "[5/8] Applying config maps..."
 # ActorTemplate volumes did grow an `image` source (an @-pinned OCI image mounted
 # read-only), so staging files without rebuilding the actor image is now possible,
 # but there is still no ConfigMap volume source.
-kubectl apply -f "$SCRIPT_DIR/openclaw-demo-config.yaml"
+# The WhatsApp ACP binding is keyed by one concrete conversation, so the number
+# has to be substituted in here. There is no wildcard to fall back on: the
+# channel plugin matches an inbound conversation by string-equality against a
+# normalized E.164, so a binding of "*" compiles fine, matches nothing, and the
+# gateway quietly answers every message with its own embedded agent instead of
+# the actor. Nothing in any log says the binding missed.
+[ -n "$WHATSAPP_PEER" ] || die "Set WHATSAPP_PEER to the E.164 number that will message the agent (e.g. +15555550123). It keys the ACP binding, and without it turns never reach Substrate."
+render "$SCRIPT_DIR/openclaw-demo-config.yaml" | kubectl apply -f -
 
 # --- [6/8] Gateway (+ dashboard) ---
 echo "[6/8] Deploying gateway..."

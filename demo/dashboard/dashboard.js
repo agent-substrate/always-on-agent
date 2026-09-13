@@ -345,6 +345,24 @@ app.get("/api/state", (c) => {
   });
 });
 
+// Empty the event stream and the timeline, for a clean cold open.
+//
+// Both live on the server, so reloading the browser does nothing to them: the
+// page comes back showing last night's burst. That matters more than it sounds
+// for a recording, because the warm-up run that puts a real number on the
+// density card also puts twenty lines in the stream, and the first shot is
+// supposed to be a fleet that has done nothing.
+//
+// Occupancy samples deliberately survive. They are the warm-up, and throwing
+// them away here would undo the thing this exists to make possible.
+app.post("/api/reset-view", (c) => {
+  const cleared = state.events.length + state.timeline.length;
+  state.events.length = 0;
+  state.timeline.length = 0;
+  addEvent("sys", "Ready");
+  return c.json({ ok: true, cleared, occupancySamplesKept: occupancySamples.length });
+});
+
 // Burst: create N logical actors and fire an agent task at each, to demonstrate
 // many suspendable actors multiplexing onto a small worker pool.
 app.post("/api/burst", async (c) => {

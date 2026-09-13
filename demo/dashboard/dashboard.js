@@ -308,8 +308,14 @@ app.get("/api/state", (c) => {
   // It also says the thing the demo is claiming. Twenty actors that never
   // needed more than five workers at once is 4:1, which is checkable against
   // the fleet grid on the same screen.
+  //
+  // Two busy workers is the floor, not one. A fleet of twenty that has served a
+  // single turn has genuinely run at 20:1, but printing it is worse than
+  // printing nothing: the card then falls to 4:1 once the fleet is actually
+  // loaded, so the number a viewer sees moves the wrong way as the demo gets
+  // more impressive. Below two workers there is no packing to report on yet.
   const peakRatio =
-    peakBusyWorkers >= 1 && busyWorkerSec >= MIN_BUSY_WORKER_SEC_PEAK
+    peakBusyWorkers >= 2 && busyWorkerSec >= MIN_BUSY_WORKER_SEC_PEAK
       ? `${(managedActors / peakBusyWorkers).toFixed(1)}:1`
       : null;
   const avgRatio =
@@ -362,6 +368,10 @@ app.post("/api/reset-view", (c) => {
   const cleared = state.events.length + state.timeline.length;
   state.events.length = 0;
   state.timeline.length = 0;
+  // The cycle counter too, or the last run's total is still sitting under the
+  // burst buttons at the cold open of the next take.
+  churn.cycles = 0;
+  churn.refused = 0;
   addEvent("sys", "Ready");
   return c.json({ ok: true, cleared, occupancySamplesKept: occupancySamples.length });
 });
@@ -942,16 +952,13 @@ async function refresh(){
     // Operational efficiency
     el("eff-ratio").textContent=d.stats.oversubscription||"--";
     el("eff-ratio-sub").textContent=d.stats.managedActors+" managed · "+d.stats.runningActors+" running on "+d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers+" workers";
-    // Headline is the peak ratio, which holds still and is the number that
-    // sizes a pool. The average rides in the sub-label, where the peak and the
-    // duty cycle beside it say what it is: the inverse of how busy the agents
-    // are, which flatters a sleepy fleet and should never be read alone.
+    // Peak only. The average is still on /api/state for anyone who wants it,
+    // but it does not go on the screen. It reads in the hundreds on a sleepy
+    // fleet, and a 196:1 sitting in small type directly under the honest 4:1 is
+    // the figure that gets screenshotted and quoted back at us.
     if(d.stats.peakRatio){
       el("eff-density").textContent=d.stats.peakRatio;
-      const sub="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy at once";
-      el("eff-density-sub").textContent=d.stats.avgRatio
-        ? sub+" · avg "+d.stats.avgRatio+" · duty "+d.stats.dutyCyclePct+"%"
-        : sub;
+      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy at once";
     }else{
       el("eff-density").textContent="--";
       el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · nothing has run yet";
@@ -962,6 +969,8 @@ async function refresh(){
     const bs=el("burst-status");
     if(bs&&d.stats.churnRunning){
       bs.textContent=d.stats.churnCycles+" wake-serve-park cycles · "+d.stats.churnSecsLeft+"s left";
+    }else if(bs&&d.stats.churnCycles===0){
+      bs.textContent="";
     }
     el("eff-savings").textContent=d.stats.savings+"%";
     el("eff-savings-sub").textContent="~"+d.stats.costReductionX+"× fewer pods vs always-on";

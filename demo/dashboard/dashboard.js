@@ -71,15 +71,19 @@ const state = {
 
 const MAX_EVENTS = 200;
 
-// Rolling window for the achieved-density figure. Ten minutes is long enough
-// that a single conversation turn does not swing it and short enough that it
-// still reflects what the fleet is doing now, rather than everything since the
-// pod started.
-const DENSITY_WINDOW_MS = 10 * 60 * 1000;
+// Rolling window for the achieved-density figure. Long enough that a single
+// conversation turn does not swing it, short enough that it still reflects what
+// the fleet is doing now rather than everything since the pod started. Fifteen
+// minutes also means a warm-up run before a demo is still inside the window
+// when the demo starts, so the card is showing a measurement at the cold open
+// instead of a dash.
+const DENSITY_WINDOW_MS = 15 * 60 * 1000;
 
-// Least busy worker-time in the window before a density is worth printing.
-// See the achievedRatio note on /api/state for why zero is not the threshold.
-const MIN_BUSY_WORKER_SEC = 60;
+// Least busy worker-time in the window before each figure is worth printing.
+// The peak ratio needs far less because it is not a division by a small
+// measured number; see the notes on /api/state.
+const MIN_BUSY_WORKER_SEC_AVG = 60;
+const MIN_BUSY_WORKER_SEC_PEAK = 10;
 
 // Occupancy samples, one per sync, trimmed to the window above.
 //
@@ -272,13 +276,12 @@ app.get("/api/state", (c) => {
   // invariant of the scheduler.
   //
   // The quantity that answers the question is how much worker the fleet
-  // actually draws. Integrate busy workers over the window for mean demand,
-  // then divide the managed actor count by it. That is exactly 1/duty-cycle,
-  // which is the honest way to read it and the reason the average alone is a
-  // weak claim: it grows without bound as the workload gets sparser, so a big
-  // number here is a statement about how idle the agents are, not about how
-  // good the packing is. Peak is what actually sizes a fleet, so it ships
-  // beside it and the two should always be quoted together.
+  // actually draws, so integrate busy workers over the window. That gives two
+  // divisors and they are worth keeping apart. Against mean demand the ratio is
+  // exactly 1/duty-cycle, so it grows without bound as the workload gets
+  // sparser and a big number says how idle the agents are rather than how well
+  // they pack. Against peak it says how many workers the fleet has ever needed
+  // at once, which is what sizes a pool. Peak is the headline for that reason.
   let windowSec = 0;
   let busyWorkerSec = 0;
   let runningActorSec = 0;
@@ -290,18 +293,27 @@ app.get("/api/state", (c) => {
     if (s.busyWorkers > peakBusyWorkers) peakBusyWorkers = s.busyWorkers;
   }
   const avgBusyWorkers = windowSec > 0 ? busyWorkerSec / windowSec : 0;
-  // Null rather than a number when the window holds almost no work.
+
+  // The headline is peak-based, and the average has been demoted to the
+  // sub-line. Both are true, but they behave very differently on a screen.
   //
-  // Guarding on zero alone was not enough, and the failure is loud rather than
-  // quiet: one short wake ten minutes ago leaves mean demand at 0.01 workers
-  // and the card reads 1337:1. That is arithmetic on six worker-seconds, not a
-  // result, and it is the most quotable thing on the screen. Dividing by a
-  // small measured number needs enough denominator to be worth printing.
+  // The average divides by a small measured number, so it is unstable at the
+  // bottom and it drifts upward on its own: leave the fleet alone and the
+  // window empties, mean demand falls, and the card climbs while nothing is
+  // happening. One short wake was enough to make it read 1337:1. Peak divides
+  // by an integer that only ever moves when real work arrives, so it holds
+  // still, and it is the number that actually sizes a pool, because peak
+  // concurrency is what you have to buy.
   //
-  // Sixty worker-seconds is one worker busy for a minute, or about six agent
-  // turns. Below that the honest output is that nothing has happened yet.
-  const achievedRatio =
-    busyWorkerSec >= MIN_BUSY_WORKER_SEC && avgBusyWorkers > 0
+  // It also says the thing the demo is claiming. Twenty actors that never
+  // needed more than five workers at once is 4:1, which is checkable against
+  // the fleet grid on the same screen.
+  const peakRatio =
+    peakBusyWorkers >= 1 && busyWorkerSec >= MIN_BUSY_WORKER_SEC_PEAK
+      ? `${(managedActors / peakBusyWorkers).toFixed(1)}:1`
+      : null;
+  const avgRatio =
+    busyWorkerSec >= MIN_BUSY_WORKER_SEC_AVG && avgBusyWorkers > 0
       ? `${(managedActors / avgBusyWorkers).toFixed(1)}:1`
       : null;
   const dutyCyclePct =
@@ -313,7 +325,8 @@ app.get("/api/state", (c) => {
     ...state,
     stats: {
       ...state.stats,
-      achievedRatio,
+      peakRatio,
+      avgRatio,
       avgBusyWorkers: avgBusyWorkers.toFixed(2),
       peakBusyWorkers,
       dutyCyclePct,
@@ -762,15 +775,19 @@ async function refresh(){
     // Operational efficiency
     el("eff-ratio").textContent=d.stats.oversubscription||"--";
     el("eff-ratio-sub").textContent=d.stats.managedActors+" managed · "+d.stats.runningActors+" running on "+d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers+" workers";
-    // Peak rides in the sub-label on purpose. The headline ratio is the inverse
-    // of the duty cycle and flatters a sleepy fleet, so the number that sizes
-    // the pool has to be visible in the same glance.
-    if(d.stats.achievedRatio){
-      el("eff-density").textContent=d.stats.achievedRatio;
-      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · avg "+d.stats.avgBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy · peak "+d.stats.peakBusyWorkers+" · duty "+d.stats.dutyCyclePct+"%";
+    // Headline is the peak ratio, which holds still and is the number that
+    // sizes a pool. The average rides in the sub-label, where the peak and the
+    // duty cycle beside it say what it is: the inverse of how busy the agents
+    // are, which flatters a sleepy fleet and should never be read alone.
+    if(d.stats.peakRatio){
+      el("eff-density").textContent=d.stats.peakRatio;
+      const sub="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy at once";
+      el("eff-density-sub").textContent=d.stats.avgRatio
+        ? sub+" · avg "+d.stats.avgRatio+" · duty "+d.stats.dutyCyclePct+"%"
+        : sub;
     }else{
       el("eff-density").textContent="--";
-      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · too little worker time to divide · peak "+d.stats.peakBusyWorkers;
+      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · nothing has run yet";
     }
     el("eff-savings").textContent=d.stats.savings+"%";
     el("eff-savings-sub").textContent="~"+d.stats.costReductionX+"× fewer pods vs always-on";

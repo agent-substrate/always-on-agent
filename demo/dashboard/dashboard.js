@@ -783,7 +783,12 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
       <div class="stat-card" style="padding:10px">
         <div class="stat-label">Oversubscription Ratio</div>
         <div class="stat-val" id="eff-ratio" style="color:var(--cyan);font-size:24px">--</div>
-        <div class="stat-label" id="eff-ratio-sub">logical actors : busy workers</div>
+        <!-- "workers", not "busy workers": this card divides by the size of the
+             pool, not by what is occupied. Dividing by busy workers is the card
+             to the right, and it is a different claim. Only on screen until the
+             first poll two seconds later, but two seconds is enough to be in a
+             cold open, and it is wrong in the repo either way. -->
+        <div class="stat-label" id="eff-ratio-sub">logical actors : workers</div>
       </div>
       <!-- Why the ratio on its left is possible, rather than that ratio again.
            Churn saturates every worker, so peak is always 5, so an "achieved

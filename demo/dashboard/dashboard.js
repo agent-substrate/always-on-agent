@@ -322,10 +322,18 @@ app.get("/api/state", (c) => {
     busyWorkerSec >= MIN_BUSY_WORKER_SEC_AVG && avgBusyWorkers > 0
       ? `${(managedActors / avgBusyWorkers).toFixed(1)}:1`
       : null;
-  const dutyCyclePct =
+  const dutyRaw =
     managedActors > 0 && windowSec > 0
-      ? ((100 * runningActorSec) / (managedActors * windowSec)).toFixed(2)
-      : "0.00";
+      ? (100 * runningActorSec) / (managedActors * windowSec)
+      : 0;
+  const dutyCyclePct = dutyRaw.toFixed(2);
+
+  // The headline, and the same measurement as the average ratio stated so it
+  // cannot be quoted as one. 98.9% idle, 1.09% duty and 91.8:1 are one fact in
+  // three forms, but only the ratio form reads as a platform capability, and
+  // only the ratio form swings by more than 2x across a two-minute take while
+  // the underlying behaviour barely moves. As a percentage it sits still.
+  const idlePct = (100 - dutyRaw).toFixed(1);
 
   return c.json({
     ...state,
@@ -339,6 +347,7 @@ app.get("/api/state", (c) => {
       avgBusyWorkers: avgBusyWorkers.toFixed(2),
       peakBusyWorkers,
       dutyCyclePct,
+      idlePct,
       densityWindowMin: Math.round(DENSITY_WINDOW_MS / 60000),
       observedSec: Math.round(windowSec),
       savings: (100 - 100 / costReductionX).toFixed(1),
@@ -776,10 +785,15 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
         <div class="stat-val" id="eff-ratio" style="color:var(--cyan);font-size:24px">--</div>
         <div class="stat-label" id="eff-ratio-sub">logical actors : busy workers</div>
       </div>
-      <!-- The measured counterpart to the ratio on its left. That one is
-           inventory, this one is what the fleet actually drew. -->
+      <!-- Why the ratio on its left is possible, rather than that ratio again.
+           Churn saturates every worker, so peak is always 5, so an "achieved
+           density" headline is always managedActors/physicalWorkers: the card
+           to the left restated, and a viewer learns nothing from the pair.
+           Idle time is the thing that cannot be inferred from 20:5, and it is
+           the actual reason the packing works. The achieved ratio is still
+           here, demoted to the sub-line where it belongs as corroboration. -->
       <div class="stat-card" style="padding:10px">
-        <div class="stat-label">Achieved Density</div>
+        <div class="stat-label">Agents Idle</div>
         <div class="stat-val" id="eff-density" style="color:var(--green);font-size:24px">--</div>
         <div class="stat-label" id="eff-density-sub">measured, rolling window</div>
       </div>
@@ -952,13 +966,13 @@ async function refresh(){
     // Operational efficiency
     el("eff-ratio").textContent=d.stats.oversubscription||"--";
     el("eff-ratio-sub").textContent=d.stats.managedActors+" managed · "+d.stats.runningActors+" running on "+d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers+" workers";
-    // Peak only. The average is still on /api/state for anyone who wants it,
-    // but it does not go on the screen. It reads in the hundreds on a sleepy
-    // fleet, and a 196:1 sitting in small type directly under the honest 4:1 is
-    // the figure that gets screenshotted and quoted back at us.
+    // Idle time headlines, achieved ratio corroborates. Gated on the same
+    // peak >= 2 as before: with nothing running the idle figure is a true and
+    // useless 100%, and there is no packing to report until at least two
+    // workers have been busy at the same moment.
     if(d.stats.peakRatio){
-      el("eff-density").textContent=d.stats.peakRatio;
-      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy at once";
+      el("eff-density").textContent=d.stats.idlePct+"%";
+      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy at once · "+d.stats.peakRatio+" achieved";
     }else{
       el("eff-density").textContent="--";
       el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · nothing has run yet";

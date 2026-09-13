@@ -416,11 +416,16 @@ function sleep(ms) {
 // event stream. They are counted and reported in a rolling line instead, which
 // is more legible and is also the more useful fact: not that one actor was
 // refused, but that the pool is saturated and staying that way.
+//
+// "and retried" is load-bearing, not softening. Refusal is the designed
+// response to a full pool and every refused actor comes back a moment later;
+// without that clause a reader watching fifteen of these scroll past has no way
+// to tell backpressure from dropped work, and assumes the worse one.
 function reportRefusals() {
   if (churn.refused > 0) {
     addEvent(
       "substrate",
-      `Pool saturated: ${churn.refused} resume${churn.refused === 1 ? "" : "s"} refused with HTTP 503 while ${state.pods.length} ateoms were full`
+      `Pool saturated: ${churn.refused} resume${churn.refused === 1 ? "" : "s"} refused with HTTP 503 and retried while all ${state.pods.length} ateoms were busy`
     );
     churn.refused = 0;
   }
@@ -492,7 +497,12 @@ app.post("/api/churn", async (c) => {
     `Churn: ${count} actors cycling through ${state.pods.length} ateoms for ${seconds}s`
   );
 
-  const ticker = setInterval(reportRefusals, 3000);
+  // Ten seconds, not three. At three a 45s run emits fifteen near-identical
+  // saturation lines and they are the only thing left in the panel, which on a
+  // screen reads as a system failing rather than as one pushing back. Four
+  // lines make the same point and leave the resume and suspend events visible
+  // around them, which is what the panel is for.
+  const ticker = setInterval(reportRefusals, 10000);
   // Not awaited: the loops outlive the request, and the button wants an answer
   // now rather than in forty-five seconds.
   Promise.all(names.map((n) => churnActor(n, atespace, hold)))
@@ -821,7 +831,12 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
     <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
       <span style="font-size:11px;color:var(--muted)">Demo multiplexing:</span>
       <button class="burst-btn" onclick="churn(10,45)">⚡ Churn 10 agents</button>
-      <button class="burst-btn" onclick="churn(18,60)">⚡ Churn all 18</button>
+      <!-- No number on this one. It churns oc-agent-1..18, which is accurate, but
+           on screen it sits a few centimetres from "20 managed" and a viewer
+           reads the two as disagreeing rather than as the fleet minus the
+           unnumbered actor and the conversation. The count is not the point of
+           the button anyway. -->
+      <button class="burst-btn" onclick="churn(18,60)">⚡ Churn the fleet</button>
       <button class="burst-btn" id="churn-stop" onclick="churnStop()" style="background:var(--muted)">■ Stop</button>
       <button class="burst-btn" onclick="burst(10)" style="background:#30363d;color:#8b949e">Burst 10 (hold)</button>
       <span id="burst-status" style="font-size:11px;color:var(--cyan)"></span>

@@ -790,15 +790,22 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
              cold open, and it is wrong in the repo either way. -->
         <div class="stat-label" id="eff-ratio-sub">logical actors : workers</div>
       </div>
-      <!-- Why the ratio on its left is possible, rather than that ratio again.
-           Churn saturates every worker, so peak is always 5, so an "achieved
-           density" headline is always managedActors/physicalWorkers: the card
-           to the left restated, and a viewer learns nothing from the pair.
-           Idle time is the thing that cannot be inferred from 20:5, and it is
-           the actual reason the packing works. The achieved ratio is still
-           here, demoted to the sub-line where it belongs as corroboration. -->
+      <!-- The measured counterpart of the card on its left: that one is what the
+           deployment was configured to attempt, this one is what was actually
+           observed. They coincide only while churn is saturating the pool; any
+           window where peak busy < pool size pulls them apart, which is most
+           windows that are not a demo.
+
+           Idle time sits in the sub-line rather than the headline on purpose. It
+           is the reason the packing works, but read cold, off a screen, by
+           someone who has not heard the setup, a big "90% idle" reads as
+           underutilisation. It explains the headline; it is not the claim.
+
+           Ceiling worth knowing: 20 actors over 5 workers cannot measure above
+           4.0:1, so this card can catch the one on its left but never beat it.
+           Anything larger comes from demo/measure/density.py model. -->
       <div class="stat-card" style="padding:10px">
-        <div class="stat-label">Agents Idle</div>
+        <div class="stat-label">Achieved Density</div>
         <div class="stat-val" id="eff-density" style="color:var(--green);font-size:24px">--</div>
         <div class="stat-label" id="eff-density-sub">measured, rolling window</div>
       </div>
@@ -971,16 +978,16 @@ async function refresh(){
     // Operational efficiency
     el("eff-ratio").textContent=d.stats.oversubscription||"--";
     el("eff-ratio-sub").textContent=d.stats.managedActors+" managed · "+d.stats.runningActors+" running on "+d.stats.occupiedWorkers+"/"+d.stats.physicalWorkers+" workers";
-    // Idle time headlines, achieved ratio corroborates. Gated on the same
-    // peak >= 2 as before: with nothing running the idle figure is a true and
-    // useless 100%, and there is no packing to report until at least two
-    // workers have been busy at the same moment.
+    // Achieved ratio headlines, idle time explains it. Gated on peak >= 2:
+    // with nothing running the idle figure is a true and useless 100%, and
+    // there is no packing to report until at least two workers have been busy
+    // at the same moment.
     if(d.stats.peakRatio){
-      el("eff-density").textContent=d.stats.idlePct+"%";
-      // "achieved density" in full. The card is headlined on idle now, so the
-      // ratio has lost the label it used to inherit from the card title, and a
-      // bare "4.0:1" next to a percentage is a number with no unit.
-      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy · "+d.stats.peakRatio+" achieved density";
+      el("eff-density").textContent=d.stats.peakRatio;
+      // Idle first in the sub-line, peak second. Idle is the one a viewer can
+      // act on ("that is why five is enough"); peak is the arithmetic behind
+      // the headline and only matters to someone checking the working.
+      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · agents idle "+d.stats.idlePct+"% · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy";
     }else{
       el("eff-density").textContent="--";
       el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · nothing has run yet";

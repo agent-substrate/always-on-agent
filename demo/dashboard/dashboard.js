@@ -972,7 +972,10 @@ async function refresh(){
     // workers have been busy at the same moment.
     if(d.stats.peakRatio){
       el("eff-density").textContent=d.stats.idlePct+"%";
-      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy at once · "+d.stats.peakRatio+" achieved";
+      // "achieved density" in full. The card is headlined on idle now, so the
+      // ratio has lost the label it used to inherit from the card title, and a
+      // bare "4.0:1" next to a percentage is a number with no unit.
+      el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · peak "+d.stats.peakBusyWorkers+" of "+d.stats.physicalWorkers+" workers busy · "+d.stats.peakRatio+" achieved density";
     }else{
       el("eff-density").textContent="--";
       el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · nothing has run yet";

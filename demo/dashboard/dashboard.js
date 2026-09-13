@@ -325,6 +325,9 @@ app.get("/api/state", (c) => {
     ...state,
     stats: {
       ...state.stats,
+      churnRunning: churn.running,
+      churnCycles: churn.cycles,
+      churnSecsLeft: churn.running ? Math.max(0, Math.round((churn.until - Date.now()) / 1000)) : 0,
       peakRatio,
       avgRatio,
       avgBusyWorkers: avgBusyWorkers.toFixed(2),
@@ -361,6 +364,150 @@ app.post("/api/reset-view", (c) => {
   state.timeline.length = 0;
   addEvent("sys", "Ready");
   return c.json({ ok: true, cleared, occupancySamplesKept: occupancySamples.length });
+});
+
+// Churn: the same multiplexing as a burst, but kept moving.
+//
+// A burst wakes N actors and stops. Nothing ever puts them back, because the
+// idle timeout only follows conversations the gateway drove, so the fleet grid
+// lights up once and then sits there until somebody suspends it by hand. The
+// static picture is also the least interesting half of the claim: five lit
+// chips out of twenty says a pool can be shared, and says nothing about how
+// fast, or about the sharing continuing to work once the pool is full.
+//
+// So each actor runs its own loop -- wake, serve, park, pause, again -- and the
+// loops are jittered against each other rather than stepped in lock. Freeing a
+// worker is what lets one of the refused actors land, so the pool stays at five
+// while the occupants keep changing, which is the actual claim and is also the
+// thing worth looking at.
+//
+// The fleet is oc-agent-1..18 plus the unnumbered oc-agent and one conversation
+// actor per chat, which is twenty: a clean 4:1 against five workers and five
+// clean rows of four in the grid. Churning past 18 creates a twenty-first actor
+// and costs both of those, so the cap is the fleet rather than a round number.
+const FLEET_SIZE = 18;
+
+const churn = { running: false, stop: false, until: 0, cycles: 0, refused: 0 };
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// A refusal every couple of seconds per waiting actor would be most of the
+// event stream. They are counted and reported in a rolling line instead, which
+// is more legible and is also the more useful fact: not that one actor was
+// refused, but that the pool is saturated and staying that way.
+function reportRefusals() {
+  if (churn.refused > 0) {
+    addEvent(
+      "substrate",
+      `Pool saturated: ${churn.refused} resume${churn.refused === 1 ? "" : "s"} refused with HTTP 503 while ${state.pods.length} ateoms were full`
+    );
+    churn.refused = 0;
+  }
+}
+
+async function churnActor(name, atespace, hold) {
+  const url = `http://${name}.${atespace}.actors.resources.substrate.ate.dev/healthz`;
+  // Start somewhere random inside the cycle so twenty loops do not fire on the
+  // same tick. Without this they synchronise into a slow pulse, which looks
+  // staged and hides the refusals.
+  await sleep(Math.random() * hold * 2);
+  while (!churn.stop && Date.now() < churn.until) {
+    let served = false;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (r.ok) served = true;
+      else if (r.status === 503) churn.refused++;
+    } catch {}
+
+    if (!served) {
+      // Refused or timed out. Back off, with jitter so the waiting actors do
+      // not retry into the same instant, but not for long: the gap between a
+      // worker coming free and somebody knocking on it is dead air on the
+      // panel, and with fourteen actors waiting there is no reason for it.
+      await sleep(150 + Math.random() * 350);
+      continue;
+    }
+
+    // Hold the worker briefly, then give it up. This is the part a plain burst
+    // never does, and it is what lets somebody else land.
+    await sleep(hold);
+    await runCmd(`${KUBECTL_ATE} suspend actor ${name} -a ${atespace} 2>/dev/null || true`, 30000);
+    churn.cycles++;
+    await sleep(100 + Math.random() * 300);
+  }
+}
+
+app.post("/api/churn", async (c) => {
+  if (churn.running) return c.json({ ok: false, error: "already running" }, 409);
+  let count = 10;
+  let seconds = 45;
+  let hold = 1500;
+  try {
+    const b = await c.req.json();
+    count = Math.min(FLEET_SIZE, Math.max(2, parseInt(b.count, 10) || count));
+    seconds = Math.min(300, Math.max(5, parseInt(b.seconds, 10) || seconds));
+    hold = Math.min(10000, Math.max(200, parseInt(b.hold, 10) || hold));
+  } catch {}
+  const atespace = ATESPACES[0] || "openclaw-demo";
+  const names = [];
+  for (let i = 1; i <= count; i++) {
+    const name = `oc-agent-${i}`;
+    await runCmd(
+      `${KUBECTL_ATE} create actor ${name} -a ${atespace} --template-ref openclaw-agent 2>/dev/null || true`,
+      15000
+    );
+    names.push(name);
+  }
+
+  Object.assign(churn, {
+    running: true,
+    stop: false,
+    until: Date.now() + seconds * 1000,
+    cycles: 0,
+    refused: 0,
+  });
+  addEvent(
+    "substrate",
+    `Churn: ${count} actors cycling through ${state.pods.length} ateoms for ${seconds}s`
+  );
+
+  const ticker = setInterval(reportRefusals, 3000);
+  // Not awaited: the loops outlive the request, and the button wants an answer
+  // now rather than in forty-five seconds.
+  Promise.all(names.map((n) => churnActor(n, atespace, hold)))
+    .then(async () => {
+      clearInterval(ticker);
+      reportRefusals();
+      // Leave the fleet parked. Anything still holding a worker when the clock
+      // ran out would otherwise sit there awake for the rest of the session,
+      // and the next thing anyone does is look at a cold open.
+      //
+      // Twice, with a pause. The sweep takes a few seconds to walk the fleet,
+      // and an actor that was mid-resume when the sweep went past it lands
+      // behind the sweep and stays awake. One straggler out of eighteen is
+      // exactly the sort of thing nobody notices until it is on camera.
+      for (let pass = 0; pass < 2; pass++) {
+        for (const n of names) {
+          await runCmd(`${KUBECTL_ATE} suspend actor ${n} -a ${atespace} 2>/dev/null || true`, 30000);
+        }
+        if (pass === 0) await sleep(3000);
+      }
+      addEvent("substrate", `Churn: done, ${churn.cycles} wake-serve-park cycles, fleet parked`);
+      churn.running = false;
+    })
+    .catch(() => {
+      clearInterval(ticker);
+      churn.running = false;
+    });
+
+  return c.json({ ok: true, count, seconds, hold, actors: names });
+});
+
+app.post("/api/churn/stop", (c) => {
+  churn.stop = true;
+  return c.json({ ok: true, wasRunning: churn.running, cycles: churn.cycles });
 });
 
 // Burst: create N logical actors and fire an agent task at each, to demonstrate
@@ -637,8 +784,10 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
     </div>
     <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
       <span style="font-size:11px;color:var(--muted)">Demo multiplexing:</span>
-      <button class="burst-btn" onclick="burst(5)">⚡ Burst 5 tasks</button>
-      <button class="burst-btn" onclick="burst(10)">⚡ Burst 10 tasks</button>
+      <button class="burst-btn" onclick="churn(10,45)">⚡ Churn 10 agents</button>
+      <button class="burst-btn" onclick="churn(18,60)">⚡ Churn all 18</button>
+      <button class="burst-btn" id="churn-stop" onclick="churnStop()" style="background:var(--muted)">■ Stop</button>
+      <button class="burst-btn" onclick="burst(10)" style="background:#30363d;color:#8b949e">Burst 10 (hold)</button>
       <span id="burst-status" style="font-size:11px;color:var(--cyan)"></span>
     </div>
   </div>
@@ -807,6 +956,13 @@ async function refresh(){
       el("eff-density").textContent="--";
       el("eff-density-sub").textContent="last "+d.stats.densityWindowMin+"m · nothing has run yet";
     }
+    // Live cycle counter while churn runs. A grid that keeps blinking is the
+    // point, but blinking alone does not say how much has happened, and the
+    // count is the thing somebody will want after the fact.
+    const bs=el("burst-status");
+    if(bs&&d.stats.churnRunning){
+      bs.textContent=d.stats.churnCycles+" wake-serve-park cycles · "+d.stats.churnSecsLeft+"s left";
+    }
     el("eff-savings").textContent=d.stats.savings+"%";
     el("eff-savings-sub").textContent="~"+d.stats.costReductionX+"× fewer pods vs always-on";
 
@@ -864,6 +1020,24 @@ async function refresh(){
   }catch(e){}
 }
 function escHtml(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+// Churn returns as soon as the loops are started, so the buttons come straight
+// back and the countdown comes from the server rather than a local timer that
+// would drift away from what the grid is doing.
+async function churn(n,secs){
+  const s=document.getElementById("burst-status");
+  document.querySelectorAll(".burst-btn").forEach(b=>b.disabled=true);
+  if(s)s.textContent="starting "+n+" agents…";
+  try{
+    const r=await fetch("/api/churn",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({count:n,seconds:secs})});
+    const d=await r.json();
+    if(s)s.textContent=d.ok?(d.count+" agents cycling for "+d.seconds+"s"):("error: "+(d.error||"failed"));
+  }catch(e){ if(s)s.textContent="error: "+e.message; }
+  finally{ setTimeout(()=>document.querySelectorAll(".burst-btn").forEach(b=>b.disabled=false),1500); refresh(); }
+}
+async function churnStop(){
+  const s=document.getElementById("burst-status");
+  try{ await fetch("/api/churn/stop",{method:"POST"}); if(s)s.textContent="stopping, parking the fleet…"; }catch(e){}
+}
 async function burst(n){
   const s=document.getElementById("burst-status");
   document.querySelectorAll(".burst-btn").forEach(b=>b.disabled=true);

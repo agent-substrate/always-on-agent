@@ -227,7 +227,14 @@ def main():
             # Home, draw, then clear to end of screen. Clearing first gives a
             # visible flash every cycle, which is exactly the sort of thing that
             # pulls the eye away from the panel the demo is about.
-            sys.stdout.write("\033[H" + "\n".join(lines) + "\033[J")
+            #
+            # Every line clears to its own end as it is written. Without that,
+            # a row that shrinks keeps the tail of whatever was there before,
+            # and the panel prints actor names that do not exist: the head of
+            # this cycle's name welded to the tail of last cycle's. Clearing to
+            # end of screen at the finish does not help, because by then the
+            # stale tails have already been overwritten by the new text.
+            sys.stdout.write("\033[H" + "\033[K\n".join(lines) + "\033[K\033[J")
             sys.stdout.flush()
             time.sleep(args.interval)
     except KeyboardInterrupt:

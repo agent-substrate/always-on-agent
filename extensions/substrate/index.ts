@@ -54,6 +54,9 @@ type SubstrateConfig = {
   templateForAgent?: Record<string, string>;
   actorDomain?: string;
   actorToken?: string;
+  // Marker prepended to every reply, for channels where the gateway posts as
+  // the same account the human types from and nothing else tells them apart.
+  replyPrefix?: string;
   // How the gateway provisions actors: "ateapi" (in-band gRPC + podcert mTLS)
   // or "kubectl-ate" (shells out to kubectl-ate; for pods without a podcert).
   provisioner?: "ateapi" | "kubectl-ate";
@@ -101,6 +104,7 @@ const plugin = {
         templateForAgent: cfg.templateForAgent,
         actorDomain: cfg.actorDomain,
         actorToken: cfg.actorToken,
+        replyPrefix: cfg.replyPrefix,
         provisioner,
         onActivity: (name) => suspender.touch(name),
         onTurnStart: (name) => suspender.begin(name),

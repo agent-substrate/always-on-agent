@@ -41,6 +41,22 @@ export type SubstrateAcpRuntimeConfig = {
   actorDomain?: string;
   /** Bearer token for the actor's /v1/chat/completions API. */
   actorToken?: string;
+  /**
+   * Prepended to the first text chunk of every reply the actor streams back.
+   *
+   * On a channel where the gateway is bound to the same account the human is
+   * typing from (WhatsApp paired to your own number is the obvious one), the
+   * agent's messages render exactly like the human's: same bubble, same side,
+   * same read receipts. Nothing downstream distinguishes them, so the marker
+   * has to be in the text.
+   *
+   * It goes here rather than in the actor's persona because a persona
+   * instruction is a request. The model honours it for a while and then drops
+   * it, most reliably right after a resume, which is the one moment in this
+   * system worth being able to read off a transcript. Doing it on the way out
+   * makes it a property of the channel instead.
+   */
+  replyPrefix?: string;
   /** Creates the conversation actor from its golden template if absent. */
   provisioner: Provisioner;
   /** Idle-suspend hooks (the sandboxed actor can't suspend itself, so the
@@ -106,6 +122,7 @@ export function createSubstrateAcpRuntime(config: SubstrateAcpRuntimeConfig): Ac
         authHeaders(),
         abort.signal,
         resolveResult,
+        config.replyPrefix,
       );
       return {
         requestId: input.requestId,
@@ -155,6 +172,7 @@ async function* streamTurn(
   headers: Record<string, string>,
   signal: AbortSignal,
   resolveResult: (v: AcpRuntimeTurnResult) => void,
+  replyPrefix?: string,
 ): AsyncIterable<AcpRuntimeEvent> {
   let res: Response;
   try {
@@ -192,6 +210,12 @@ async function* streamTurn(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // Emitted lazily, immediately before the first chunk of actual text, rather
+  // than up front: a turn can fail or be cancelled before the actor says
+  // anything, and a bare prefix sitting alone in the thread is worse than no
+  // prefix at all. Tool calls do not count as text, so a reply that starts by
+  // calling a tool still gets marked on the words it eventually produces.
+  let prefixPending = Boolean(replyPrefix);
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -209,7 +233,12 @@ async function* streamTurn(
           return;
         }
         const ev = parseChunk(data);
-        if (ev) yield ev;
+        if (!ev) continue;
+        if (prefixPending && ev.type === "text_delta") {
+          prefixPending = false;
+          yield { type: "text_delta", text: replyPrefix!, tag: "agent_message_chunk" };
+        }
+        yield ev;
       }
     }
     resolveResult({ status: "completed" });

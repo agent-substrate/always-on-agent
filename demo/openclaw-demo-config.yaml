@@ -32,6 +32,7 @@ data:
               "template": "openclaw-agent",
               "actorDomain": "actors.resources.substrate.ate.dev",
               "actorToken": "${OPENCLAW_GATEWAY_TOKEN}",
+              "replyPrefix": "🤖 ",
               "provisioner": "kubectl-ate",
               "kubectlAtePath": "/usr/local/bin/kubectl-ate",
               "ateapiAddress": "api.ate-system.svc.cluster.local:443"

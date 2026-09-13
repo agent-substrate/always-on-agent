@@ -42,6 +42,10 @@
         "minLength": 1,
         "description": "Gateway role: bearer token for the actor's /v1/chat/completions API."
       },
+      "replyPrefix": {
+        "type": "string",
+        "description": "Gateway role: prepended to the first text chunk of every reply. Use it on channels where the gateway posts as the same account the human types from (WhatsApp paired to your own number), where the agent's messages are otherwise indistinguishable from the human's."
+      },
       "provisioner": {
         "type": "string",
         "enum": ["ateapi", "kubectl-ate"],
@@ -80,6 +84,7 @@
     "template": { "label": "Actor Template", "help": "Golden ActorTemplate conversation actors derive from, by bare name (gateway role only)." },
     "actorDomain": { "label": "Actor Domain", "help": "DNS domain actors are addressed under (gateway role only)." },
     "actorToken": { "label": "Actor Token", "help": "Auth token for the actor's HTTP API (gateway role only)." },
+    "replyPrefix": { "label": "Reply Prefix", "help": "Marker on the front of every reply, so the agent's messages are readable as the agent's on a channel that posts them as you." },
     "idleTimeoutSeconds": { "label": "Idle Timeout (s)", "help": "How long a conversation sits with no active work before its actor is suspended." },
     "ateapiAddress": { "label": "ateapi Address", "help": "Substrate control-plane gRPC endpoint (gateway role only)." }
   },

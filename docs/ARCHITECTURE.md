@@ -87,7 +87,7 @@ Everything in the system falls into three buckets. The integration adds a small 
 1. User sends a WhatsApp message.
 2. The gateway's WhatsApp plugin receives it over its always-on persistent connection.
 3. The ACP bindings router sends the turn to `SubstrateAcpRuntime`, which issues an HTTP POST to the actor's atenet URL.
-4. atenet's ext_proc inspects the Host header; if the actor is SUSPENDED it calls `ateapi.ResumeActor()` (a gVisor restore from GCS in under a second) then forwards the request.
+4. atenet's ext_proc inspects the Host header; if the actor is SUSPENDED it calls `ateapi.ResumeActor()`, which restores the gVisor snapshot from GCS before the request is forwarded. See *Measured latency* below for what that costs.
 5. The actor's `/v1/chat/completions` endpoint runs the full agentic loop (Gemini), streaming the reply back as Server-Sent Events.
 6. The gateway relays the reply to the WhatsApp plugin, which sends it to the user.
 7. After the idle window with no in-flight turn for that actor, the **gateway** calls `ateapi.SuspendActor()` (via the same control-plane path it uses to create/resume); the worker pod is freed. Suspend is gateway-driven because a sandboxed actor holds no control-plane credentials: Substrate projects its identity into the sandbox but no podcert, cert or JWT, so it has nothing to authenticate with. The gateway already has both the credentials and the activity signal (it dispatches every turn and sees every reply).
@@ -243,9 +243,39 @@ gVisor gap, independent of Substrate.
 
 ### Verified end-to-end
 `kubectl ate create actor` → HTTP request via atenet → **restore-on-demand of a
-~60 MiB live golden** (~18s cold / ~9s warm) → agent serves → `kubectl ate suspend`
-→ resume again. Full suspend/resume lifecycle confirmed on the current OSS stack.
+~60 MiB live golden** → agent serves → `kubectl ate suspend` → resume again. Full
+suspend/resume lifecycle confirmed on the current OSS stack.
+
+### Measured latency
+
+These are three different quantities and they are easy to confuse, so quote the
+bracket along with the number.
+
+| Bracket | OpenClaw actor | |
+|---|---|---|
+| End to end, inbound message to actor serving | 3.3–4.7s warm | what a user waits for |
+| `ResumeActor` handler time | ~2.9s P50 | the handler blocks on the restore |
+| `SuspendActor` handler time | ~2.0s P50 | |
+
+Measured 12 September 2026 on a c2d-standard-8 worker pool with real OpenClaw
+actors, n=6 cycles, read from ate-api-server's own `elapsed-time` log field.
+Snapshots run 55–61 MiB.
+
+Substrate's published sub-second resume figures are control-plane handler time on
+a near-empty actor. That is a different workload: a full multi-process Node.js
+agent costs roughly an order of magnitude more to restore, because the handler
+waits on the restore and the restore scales with what the actor is carrying.
+Re-measure for your own agent rather than inheriting either number.
+
+**Cold workers are a separate trap.** The first resume onto a worker node that has
+never run a sandbox is far slower, and on some builds it fails outright and never
+recovers on its own. Pre-warm a pool before measuring anything on it; a resume
+time taken from a cold node is not a result.
 
 ## Cost Model
 
-Without Substrate, each OpenClaw instance is an always-running pod even while idle. With this split, the always-on footprint per user is just the lightweight gateway; the heavy agent consumes a worker pod only while actively processing plus a short idle window, then suspends. Many actors share a small worker pool, roughly a 5–10× compute reduction for typical personal-assistant workloads.
+Without Substrate, each OpenClaw instance is an always-running pod even while idle. With this split, the always-on footprint per user is just the lightweight gateway; the heavy agent consumes a worker pod only while actively processing plus a short idle window, then suspends. Many actors share a small worker pool.
+
+How much that saves depends entirely on how often the agents wake, so it is worth measuring rather than asserting. Over an 11.5 hour window on the acceptance cluster, one agent on a 20 minute cron held a worker for 8.3s per wake, a duty cycle of 0.72%. Projecting that occupancy onto 1,000 agents on the same schedule with random offsets, the P99 peak is 21 workers, so about 47:1.
+
+Two caveats on that 47:1. The occupancy is measured but the fleet figure is modelled from a single agent, not observed on a fleet. And the naive average over the same data is 144:1, which is arithmetically true and practically unreachable, because it assumes wakes never collide. Size a pool on the peak. `demo/measure/` has the tool and the method, and it prints the same caveat.

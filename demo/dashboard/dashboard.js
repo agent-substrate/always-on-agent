@@ -381,6 +381,17 @@ app.post("/api/reset-view", (c) => {
   // burst buttons at the cold open of the next take.
   churn.cycles = 0;
   churn.refused = 0;
+  // And the headline counter, which is a different one and was missed. Warming
+  // the density card costs a 45-second churn run and about forty-five
+  // transitions, so without this the next cold open reads "45 cycles" before
+  // anything has happened, and the beat where it climbs starts from a number
+  // the viewer cannot account for.
+  //
+  // Deliberately not touching occupancySamples: the warm-up run is the whole
+  // reason the density card has anything to say, and clearing the panels must
+  // not throw it away. The response reports what survived.
+  state.stats.totalResumes = 0;
+  state.stats.totalSuspends = 0;
   addEvent("sys", "Ready");
   return c.json({ ok: true, cleared, occupancySamplesKept: occupancySamples.length });
 });

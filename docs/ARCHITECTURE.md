@@ -259,13 +259,17 @@ bracket along with the number.
 
 Measured 12 September 2026 on a c2d-standard-8 worker pool with real OpenClaw
 actors, n=6 cycles, read from ate-api-server's own `elapsed-time` log field.
-Snapshots run 55–61 MiB.
+
+**What drives the number.** Almost all of it is the gVisor restore of a 55–61 MiB
+snapshot. That snapshot is the agent's live memory, so it tracks what the process
+is holding rather than how much conversation history is on disk: a heavier agent,
+a larger model client or more loaded skills all move it, and a longer chat history
+mostly does not.
 
 Substrate's published sub-second resume figures are control-plane handler time on
 a near-empty actor. That is a different workload: a full multi-process Node.js
-agent costs roughly an order of magnitude more to restore, because the handler
-waits on the restore and the restore scales with what the actor is carrying.
-Re-measure for your own agent rather than inheriting either number.
+agent costs roughly an order of magnitude more to restore. Re-measure for your own
+agent rather than inheriting either number.
 
 **Cold workers are a separate trap.** The first resume onto a worker node that has
 never run a sandbox is far slower, and on some builds it fails outright and never

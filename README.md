@@ -7,7 +7,9 @@ from cognition**: an always-on gateway holds the channel connections, while the
 expensive agent runs as a suspendable Substrate actor. The gateway suspends it
 once the conversation goes idle, and the next message auto-resumes it on demand.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and tradeoffs (with diagrams).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and tradeoffs (with diagrams),
+and [Measured latency](docs/ARCHITECTURE.md#measured-latency) for what activation
+actually costs and which bracket each number belongs to.
 
 ## Demo
 

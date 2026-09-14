@@ -254,22 +254,51 @@ bracket along with the number.
 | Bracket | OpenClaw actor | |
 |---|---|---|
 | End to end, inbound message to actor serving | 3.3–4.7s warm | what a user waits for |
-| `ResumeActor` handler time | ~2.9s P50 | the handler blocks on the restore |
-| `SuspendActor` handler time | ~2.0s P50 | |
+| `ResumeActor` handler time | 3.4s P50 | the handler blocks on the restore |
+| `SuspendActor` handler time | 2.2s P50 | |
 
-Measured 12 September 2026 on a c2d-standard-8 worker pool with real OpenClaw
-actors, n=6 cycles, read from ate-api-server's own `elapsed-time` log field.
+Measured 14 September 2026 on a c2d-standard-8 worker pool with a real OpenClaw
+actor, n=12 sequential cycles on warm workers with no other traffic on the
+cluster, read from ate-api-server's own `elapsed-time` log field.
 
-**What drives the number.** Almost all of it is the gVisor restore of a 55–61 MiB
-snapshot. That snapshot is the agent's live memory, so it tracks what the process
-is holding rather than how much conversation history is on disk: a heavier agent,
-a larger model client or more loaded skills all move it, and a longer chat history
+**Where the time goes.** atelet logs a `Restore timing breakdown` record for every
+restore, with a duration per stage. From the same run:
+
+| Stage | P50 | |
+|---|---|---|
+| `manifest_fetch` | 0.08s | |
+| `download` | 1.06s | pulling the snapshot from GCS |
+| `oci_unpack` | 0.01s | |
+| `ateom_restore` | 0.21s | the gVisor restore itself |
+| outside every stage counter | 1.98s | |
+| total | 3.37s | agrees with `ResumeActor` to within 10ms |
+
+Two things to know before reading that table. `download` runs concurrently with
+the asset and unpack legs by design, so the stages are not a partition and do not
+sum to the total. And roughly half the restore falls outside every stage counter,
+in a window that opens once ateom reports the sandbox restored. In most cycles
+atelet finishes within about 50ms of the first line the agent logs after the
+freeze, which is consistent with that time being the Node process tree coming back
+rather than the platform restoring it. We have not proved that mechanism, so treat
+it as an observation.
+
+**What this means for sizing your own agent.** The gVisor restore is the cheapest
+of the large stages here, not the most expensive. What a full multi-process
+Node.js agent adds is snapshot bytes and thaw time, and both scale with the agent
+rather than with Substrate, so a published resume figure measured on a near-empty
+actor will not transfer. Re-measure for your own agent rather than inheriting any
+of these numbers.
+
+The snapshot is the agent's live memory, so its size tracks what the process is
+holding rather than how much conversation history is on disk. A heavier agent, a
+larger model client or more loaded skills all move it; a longer chat history
 mostly does not.
 
-Substrate's published sub-second resume figures are control-plane handler time on
-a near-empty actor. That is a different workload: a full multi-process Node.js
-agent costs roughly an order of magnitude more to restore. Re-measure for your own
-agent rather than inheriting either number.
+The download stage is the one that is plainly addressable. This demo runs
+`onCommit: FULL`, so every actor pulls its own 55–61 MiB snapshot and shares
+nothing with its neighbours. A deployment that can use `onCommit: Data` with a
+golden resume source pulls a mostly shared image instead, which is both smaller
+and cacheable per node. That would not touch the thaw, which is the bigger half.
 
 **Cold workers are a separate trap.** The first resume onto a worker node that has
 never run a sandbox is far slower, and on some builds it fails outright and never

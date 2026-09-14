@@ -147,6 +147,27 @@ async function syncState() {
       15000
     );
 
+    // Worker state straight from the control plane, which is the same command
+    // the terminal pane in the corner runs. Occupancy used to come only from
+    // the actor-to-pod join below, and that join is empty for an actor that has
+    // been booked onto a worker but has not landed on it yet. Under churn that
+    // put 2/5 on the panel while the pane said five BUSY, which is the one
+    // disagreement beat 6 cannot survive. If the call fails the map is empty
+    // and the join alone decides, which is the old behaviour.
+    const workersOut = await runCmd(
+      `${KUBECTL_ATE} get workers 2>/dev/null || echo ''`,
+      15000
+    );
+    const workerState = {};
+    for (const line of (workersOut || "").split("\n")) {
+      // NAMESPACE POOL CLASS POD STATUS, counted from the right the way
+      // watch-fleet.py does it, so a column added on the left does not
+      // silently start reading the wrong two fields.
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 5 || cols[0] === "NAMESPACE") continue;
+      workerState[cols[cols.length - 2]] = cols[cols.length - 1].toUpperCase();
+    }
+
     const liveActors = [];
     for (const raw of actorJsons) {
       if (!raw || !raw.trim().startsWith("{")) continue;
@@ -206,11 +227,17 @@ async function syncState() {
           const active = liveActors.find(
             (a) => a.pod === podName && (a.status === "RUNNING" || a.status === "RESUMING")
           );
+          // Busy is the control plane's word ORed with the join, which is the
+          // rule the terminal pane already uses. A worker holds exactly one
+          // actor, so a booked worker is occupied whether or not its occupant
+          // has finished restoring onto it.
+          const booked = workerState[podName] && workerState[podName] !== "FREE";
           return {
             name: podName,
             phase: cols[2] || "Unknown",
             ip: cols[5] || "n/a",
             activeActor: active ? active.name : "idle",
+            busy: Boolean(active) || Boolean(booked),
           };
         });
       } catch {}
@@ -236,7 +263,7 @@ async function syncState() {
     const runningActors = state.actors.filter(
       (a) => a.status === "RUNNING" || a.status === "RESUMING"
     ).length;
-    const activePods = state.pods.filter((p) => p.activeActor !== "idle").length;
+    const activePods = state.pods.filter((p) => p.busy).length;
     state.stats.totalLogicalActiveSec += runningActors * elapsed;
     state.stats.totalPhysicalActiveSec += activePods * elapsed;
 
@@ -261,7 +288,7 @@ app.get("/api/state", (c) => {
     (a) => a.status === "RUNNING" || a.status === "RESUMING"
   ).length;
   const physicalWorkers = state.pods.length;
-  const occupiedWorkers = state.pods.filter((p) => p.activeActor !== "idle").length;
+  const occupiedWorkers = state.pods.filter((p) => p.busy).length;
   // Cost vs always-on: each managed actor would otherwise be a full always-on pod.
   // With Substrate you pay only for the currently-occupied worker footprint.
   const footprint = Math.max(1, occupiedWorkers);
@@ -417,7 +444,7 @@ app.post("/api/reset-view", (c) => {
 // and costs both of those, so the cap is the fleet rather than a round number.
 const FLEET_SIZE = 18;
 
-const churn = { running: false, stop: false, until: 0, cycles: 0, refused: 0 };
+const churn = { running: false, stop: false, until: 0, cycles: 0, refused: 0, reportedCycles: 0 };
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -432,11 +459,21 @@ function sleep(ms) {
 // response to a full pool and every refused actor comes back a moment later;
 // without that clause a reader watching fifteen of these scroll past has no way
 // to tell backpressure from dropped work, and assumes the worse one.
+//
+// Each line also carries the actors that got through since the last one. Only
+// the refusals used to be reported, so a churn run left the stream showing four
+// near-identical lines about a pool saying no and nothing at all about it saying
+// yes, which reads as a system failing rather than one under load. The landings
+// are the half that makes the refusals mean backpressure, and they are counted
+// already.
 function reportRefusals() {
+  const landed = churn.cycles - churn.reportedCycles;
+  churn.reportedCycles = churn.cycles;
   if (churn.refused > 0) {
     addEvent(
       "substrate",
-      `Pool saturated: ${churn.refused} resume${churn.refused === 1 ? "" : "s"} refused with HTTP 503 and retried while all ${state.pods.length} ateoms were busy`
+      `Pool saturated: ${churn.refused} resume${churn.refused === 1 ? "" : "s"} refused with HTTP 503 and retried, ` +
+        `${landed} actor${landed === 1 ? "" : "s"} served and parked, all ${state.pods.length} ateoms stayed busy`
     );
     churn.refused = 0;
   }
@@ -502,6 +539,7 @@ app.post("/api/churn", async (c) => {
     until: Date.now() + seconds * 1000,
     cycles: 0,
     refused: 0,
+    reportedCycles: 0,
   });
   addEvent(
     "substrate",
@@ -511,8 +549,8 @@ app.post("/api/churn", async (c) => {
   // Ten seconds, not three. At three a 45s run emits fifteen near-identical
   // saturation lines and they are the only thing left in the panel, which on a
   // screen reads as a system failing rather than as one pushing back. Four
-  // lines make the same point and leave the resume and suspend events visible
-  // around them, which is what the panel is for.
+  // lines make the same point, and each one now carries the landings alongside
+  // the refusals so the stream shows the pool working rather than only saying no.
   const ticker = setInterval(reportRefusals, 10000);
   // Not awaited: the loops outlive the request, and the button wants an answer
   // now rather than in forty-five seconds.
@@ -1042,14 +1080,23 @@ async function refresh(){
     // view wants the pod IP, the recording wants all five pods visible at once
     // and an IP nobody will read is what costs it the second row.
     el("pods").innerHTML=d.pods.length?d.pods.map(p=>{
-      const active=p.activeActor!=="idle";
-      const c=active?colorFor(p.activeActor):null;
+      // Two different questions, and they answer differently for a few seconds
+      // during a resume. Occupied is the control plane's word and drives the
+      // badge, so the panel says what the terminal pane beside it says. Landed
+      // is the actor-to-pod join and is the only thing that can name or colour
+      // an occupant, because a booked worker has no occupant to name yet.
+      const busy=p.busy;
+      const landed=p.activeActor!=="idle";
+      const c=landed?colorFor(p.activeActor):null;
       const bstyle=c?' style="border-left:4px solid '+c+'"':'';
-      return '<div class="box'+(active?" active":"")+'"'+bstyle+'>'
+      const occ=landed?actorHtml(p.activeActor,c)
+        :busy?'<span style="color:var(--muted)">actor resuming</span>'
+        :'<span style="color:var(--muted)">no actor landed</span>';
+      return '<div class="box'+(busy?" active":"")+'"'+bstyle+'>'
         +'<div class="box-hd"><b>'+p.name.split("-").slice(-2).join("-")+'</b>'
-        +'<span class="occ">'+(active?actorHtml(p.activeActor,c):'<span style="color:var(--muted)">no actor landed</span>')+'</span>'
-        +'<span class="badge '+(active?"RUNNING":"SUSPENDED")+'">'+(active?"OCCUPIED":"FREE")+'</span></div>'
-        +'<div class="sub">IP: '+p.ip+(active?' · '+actorHtml(p.activeActor,c):'')+'</div></div>';
+        +'<span class="occ">'+occ+'</span>'
+        +'<span class="badge '+(busy?"RUNNING":"SUSPENDED")+'">'+(busy?"OCCUPIED":"FREE")+'</span></div>'
+        +'<div class="sub">IP: '+p.ip+(landed?' · '+actorHtml(p.activeActor,c):'')+'</div></div>';
     }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No worker pods found</div>';
 
     // Actors. Same markup either way; the recording layout turns this into a

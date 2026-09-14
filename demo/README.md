@@ -355,7 +355,7 @@ WhatsApp conversation top right, and a terminal polling the control plane below 
 so every claim the dashboard makes is checkable against `kubectl ate` in the same
 frame.
 
-| | |
+| Time | What happens |
 |---|---|
 | 0:19 | a message arrives for an agent that is not running, and it restores and answers |
 | 0:35 | it checkpoints itself and releases the worker, with nothing asking it to |

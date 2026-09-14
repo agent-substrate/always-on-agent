@@ -348,8 +348,24 @@ Three things to know before you time it:
 
 ## Demo recording
 
-_A recording of the end-to-end flow (WhatsApp on the left, actor lifecycle on the
-right) will be linked here._ <!-- TODO: link a GitHub Release asset or external URL -->
+[![OpenClaw on Agent Substrate: always-on agents, suspended when idle](../docs/always-on-agents-demo-poster.jpg)](https://www.youtube.com/watch?v=D5a9tyPkaPY)
+
+The end-to-end flow, two minutes with narration. The dashboard is on the left, the
+WhatsApp conversation top right, and a terminal polling the control plane below it,
+so every claim the dashboard makes is checkable against `kubectl ate` in the same
+frame.
+
+| | |
+|---|---|
+| 0:19 | a message arrives for an agent that is not running, and it restores and answers |
+| 0:35 | it checkpoints itself and releases the worker, with nothing asking it to |
+| 0:47 | a follow-up comes back with the conversation intact |
+| 1:00 | ten actors cycle through five workers; the ones that do not fit are refused and retried |
+| 1:30 | the control-plane pane and the dashboard agree throughout |
+
+Watch on [YouTube](https://www.youtube.com/watch?v=D5a9tyPkaPY), or download
+[`docs/always-on-agents-demo.mp4`](../docs/always-on-agents-demo.mp4) (3.7 MB, 1440p).
+Captions are in [`docs/always-on-agents-demo.srt`](../docs/always-on-agents-demo.srt).
 
 ## Cleanup
 

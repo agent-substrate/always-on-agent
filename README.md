@@ -9,6 +9,18 @@ once the conversation goes idle, and the next message auto-resumes it on demand.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and tradeoffs (with diagrams).
 
+## Demo
+
+[![OpenClaw on Agent Substrate: always-on agents, suspended when idle](docs/always-on-agents-demo-poster.jpg)](https://www.youtube.com/watch?v=D5a9tyPkaPY)
+
+Two minutes, with narration. A WhatsApp message wakes an agent that is not
+running, it answers from restored conversation state, checkpoints itself once the
+conversation goes quiet, and then ten agents cycle through five machines while the
+control plane is queried alongside.
+
+Watch on [YouTube](https://www.youtube.com/watch?v=D5a9tyPkaPY), or download
+[`docs/always-on-agents-demo.mp4`](docs/always-on-agents-demo.mp4) (3.7 MB, 1440p).
+
 ## How it integrates
 
 ### A drop-in plugin: zero edits to existing OpenClaw files

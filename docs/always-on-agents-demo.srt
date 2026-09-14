@@ -1,0 +1,47 @@
+1
+00:00:00,000 --> 00:00:14,451
+Welcome to the always-on agent demo for Agent Substrate. The agent I'm running is OpenClaw. On the left is the dashboard for the whole fleet. Top right is my WhatsApp, and below it a terminal talking to the control plane.
+
+2
+00:00:14,700 --> 00:00:19,991
+All twenty are checkpointed to disk, and not one is running. Let's wake one up.
+
+3
+00:00:22,300 --> 00:00:27,271
+And that woke one up. It's restoring from a checkpoint, and it's about to answer.
+
+4
+00:00:29,300 --> 00:00:35,991
+There's the reply. And now watch, it puts itself away on its own. Nobody asked it to do that.
+
+5
+00:00:37,800 --> 00:00:41,451
+Now I'm asking it a follow-up about something I told it a minute ago.
+
+6
+00:00:47,300 --> 00:00:55,751
+It wasn't running when I asked. It came back with the conversation intact, because the checkpoint isn't just the process, it's the memory too.
+
+7
+00:00:59,500 --> 00:01:04,351
+Now I'm starting ten agents at once, and there are only five machines to put them on.
+
+8
+00:01:06,000 --> 00:01:15,731
+Watch the event stream at the bottom. The ones that don't fit get told no, and they come straight back and land as the others finish. That's the pool pushing back, not dropping the work.
+
+9
+00:01:18,000 --> 00:01:27,451
+The card at the top is the measured version of that. It's dividing the agents we're managing by how many machines were actually busy at the peak, and it's sitting at four to one.
+
+10
+00:01:30,500 --> 00:01:38,031
+That's not the dashboard talking, by the way. The corner down there is the control plane answering directly, and it's been saying the same thing the whole time.
+
+11
+00:01:41,000 --> 00:01:52,491
+While that winds down, one thing worth saying. Nothing inside OpenClaw was changed to make this work. It runs as a plugin, and the agent has no idea it's being checkpointed and moved between machines.
+
+12
+00:01:54,300 --> 00:02:02,111
+And there it is, back where we started. Nothing running, twenty agents still there, and the next message wakes one straight back up.

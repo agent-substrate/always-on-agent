@@ -84,20 +84,27 @@ repo.
   (`kubectl ate create atespace <a>; kubectl ate create actor <n> -a <a> --template-ref <name>`)
   and are reached at `<actor>.<atespace>.actors.resources.substrate.ate.dev`.
 
-### Substrate control-plane changes needed (verified working, submittable upstream)
+### Substrate configuration this needs
 
-| Component | Change | Why |
+It runs on stock Substrate. Earlier revisions of this file listed six
+control-plane patches as prerequisites, and that list is obsolete. The cluster
+behind [Measured latency](docs/ARCHITECTURE.md#measured-latency) runs `v0.1.0`
+images for `atecontroller`, `atelet`, `ateom-gvisor` and `atenet` with no source
+changes, the `gvisor-default` `SandboxConfig` exactly as the installer ships it,
+and the default 20s golden warmup. No pinned runsc.
+
+Two of the retired claims were wrong rather than merely stale, and
+[`substrate-patches/README.md`](substrate-patches/README.md) records them so they
+do not get repeated: a GKE-Sandbox `runsc` build is **not** required, and the
+`ATE_*` environment knobs it described never existed upstream.
+
+What is left is operator tuning. Both of these are `atenet-router` flags whose
+defaults are low for an LLM harness:
+
+| Flag | Default | Why it matters here |
 |---|---|---|
-| `atecontroller` golden flow | golden warmup made env-configurable (`ATE_GOLDEN_WARMUP_SECONDS`, ~120s) | 20s default checkpoints OpenClaw before it finishes pre-warming under gVisor |
-| `atenet` `xds.go` | route timeout 10s→300s; ext_proc message timeout 5s→60s | long LLM turns; cold restore-on-demand of a large snapshot |
-| `atenet` `resumer.go` | background resume timeout 15s→120s | a ~60 MiB cold restore exceeded 15s → 504 that *cancelled* the restore |
-| `ateom-gvisor` `runsc.go` | drop `-allow-connected-on-save` on `runsc start` (version-gate upstream) | the GKE-Sandbox runsc build rejects the flag → `runsc start` exit 2 |
-| `SandboxConfig` (gvisor) | runsc → GKE-Sandbox build | public gvisor.dev releases crash OpenClaw's sentry ~30–60s in; the GKE build keeps it alive and checkpoints it |
-| OpenClaw substrate integration | null-guard `deps.chatAbortControllers?.size` in the idle-suspend activity check | `undefined` under this OpenClaw build → uncaught exception crashed the actor ~5s after boot |
-
-The current-OSS `atelet` already discovers snapshot files dynamically
-(`listSnapshotFiles`), so it handles the GKE runsc's single combined
-`checkpoint.img` with no change.
+| `--route-timeout` | 10s | Bounds one request from the ingress listener to the actor's response. The gateway relays an entire LLM completion over that request, so a turn longer than the default is cut off. |
+| `--parked-request-budget` | 5s | Bounds how long a request waits for its actor to resume. Resume is 3.4s P50 here, so the default leaves little headroom on a cold node or a larger snapshot. |
 
 Because the plugin integrates *below* the framework via OpenClaw's own ACP
 protocol and plugin API, community-maintained channels/agents/skills, including

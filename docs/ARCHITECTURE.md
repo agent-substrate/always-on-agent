@@ -235,11 +235,17 @@ Targets **current OSS Substrate** (`agent-substrate/substrate`, CRD group `ate.d
   golden-snapshot status, the worker-pod map (which actor is restored where), and
   live gateway/WhatsApp status.
 
-**gVisor runsc caveat (important):** public gvisor.dev runsc releases crash a heavy
-multi-process Node.js actor (OpenClaw): the sentry dies ~30–60s after boot, so the
-golden captures a dead agent. The GKE-Sandbox runsc build keeps it alive and
-checkpoints it cleanly; pin it in the gVisor `SandboxConfig`. This is an upstream
-gVisor gap, independent of Substrate.
+**Check the golden's size before debugging a restore.** If the agent process is
+not alive when the controller checkpoints the golden, the checkpoint still
+succeeds and the template still reports Ready, but the snapshot is a few tens of
+KiB instead of 55–61 MiB, and every later restore fails with gVisor's
+`inconsistent private memory files on restore`. That error is downstream of a bad
+checkpoint, so read the object size in the snapshot bucket first.
+
+Older public gvisor.dev runsc releases produced exactly this, by crashing the
+sentry ~30–60s after boot on a heavy multi-process Node.js actor. The builds the
+stock gVisor `SandboxConfig` ships no longer do, and no runsc pin is needed; this
+demo runs the nightly asset the installer selects.
 
 ### Verified end-to-end
 `kubectl ate create actor` → HTTP request via atenet → **restore-on-demand of a

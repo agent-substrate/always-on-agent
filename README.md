@@ -116,6 +116,13 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md). Substrate control-plane gaps go
 upstream as issues rather than as patches carried here; the running list is in
 [`substrate-patches/README.md`](substrate-patches/README.md).
 
+Who maintains this and under what rules is in
+[`MAINTAINERS.md`](MAINTAINERS.md). This repository follows the project
+[Governance](https://github.com/agent-substrate/substrate/blob/main/GOVERNANCE.md)
+and the conventions in
+[`docs/integration-repos.md`](https://github.com/agent-substrate/substrate/blob/main/docs/integration-repos.md),
+rather than defining its own.
+
 ## License
 
 Apache License 2.0. See [`LICENSE`](LICENSE).

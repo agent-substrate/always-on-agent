@@ -20,7 +20,7 @@
  * appears in the actor name, DNS, or logs, and the result is always a valid
  * RFC-1123 DNS label regardless of peer format. The mapping is deterministic
  * and stable, so the same conversation always resolves to the same actor and
- * its DurableDir state persists across suspends.
+ * its state persists across suspends in that actor's snapshot.
  */
 import { createHash } from "node:crypto";
 

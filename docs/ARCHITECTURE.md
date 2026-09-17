@@ -25,7 +25,7 @@ Each conversation is keyed by `(accountId, peer)`, which the gateway hashes into
 many users / conversations ──► one shared, always-on gateway ──► one suspendable actor each
 ```
 
-- **Isolation:** every conversation gets its own actor with its own DurableDir (SQLite, memory, SOUL), so state never crosses conversations.
+- **Isolation:** every conversation gets its own actor and its own snapshot, so state never crosses conversations.
 - **Independent lifecycle:** each actor resumes and suspends on its own idle clock. A busy conversation never keeps another's actor warm, and an idle one costs nothing.
 - **Cost amortization:** the always-on footprint is *one* thin gateway shared across all N users, not N gateways. Per-user always-on cost trends toward zero as tenants are added, which is what lets the split match, and beat, the monolithic approach even in its best case.
 
@@ -91,7 +91,15 @@ Everything in the system falls into three buckets. The integration adds a small 
 5. The actor's `/v1/chat/completions` endpoint runs the full agentic loop (Gemini), streaming the reply back as Server-Sent Events.
 6. The gateway relays the reply to the WhatsApp plugin, which sends it to the user.
 7. After the idle window with no in-flight turn for that actor, the **gateway** calls `ateapi.SuspendActor()` (via the same control-plane path it uses to create/resume); the worker pod is freed. Suspend is gateway-driven because a sandboxed actor holds no control-plane credentials: Substrate projects its identity into the sandbox but no podcert, cert or JWT, so it has nothing to authenticate with. The gateway already has both the credentials and the activity signal (it dispatches every turn and sees every reply).
-8. The next message repeats from step 3. Conversation state is preserved because SQLite and memory live in the actor's DurableDir.
+8. The next message repeats from step 3. Conversation state is preserved because the `FULL` snapshot captures the agent's process memory and its rootfs writes, and the restore brings both back.
+
+   This template declares **no** `DurableDir` volume, so there is no on-disk
+   surface that survives independently of the snapshot. That is a deliberate
+   choice for the demo and it has two consequences worth knowing. The snapshot
+   carries everything, so it is larger and slower to move than a data-only one
+   would be. And because a template repoint restores durable data only, an
+   image update would drop this agent's conversation state rather than carry it
+   across. Moving the state onto a declared volume is tracked as future work.
 
 ## What We Built
 

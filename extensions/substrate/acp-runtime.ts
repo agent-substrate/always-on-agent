@@ -89,7 +89,7 @@ export function createSubstrateAcpRuntime(config: SubstrateAcpRuntimeConfig): Ac
   const runtime: AcpRuntime = {
     async ensureSession(input: AcpRuntimeEnsureInput): Promise<AcpRuntimeHandle> {
       // One actor per conversation: create-if-absent from the golden template.
-      // Session state lives in that actor's DurableDir; no remote call to warm.
+      // Session state lives in that actor's snapshot; no remote call to warm.
       const name = actorNameForConversation(input.sessionKey);
       const agent = (input as { agent?: string }).agent;
       await config.provisioner.ensure(name, templateFor(agent));

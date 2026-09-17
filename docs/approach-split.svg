@@ -57,7 +57,7 @@
   <rect x="864" y="262" width="160" height="72" rx="5" fill="#fce8e6" stroke="#d93025" stroke-width="1.2"/>
   <text x="944" y="281" text-anchor="middle" font-size="10" font-weight="700" fill="#d93025">gVisor snapshot → GCS</text>
   <text x="944" y="298" text-anchor="middle" font-size="9" fill="#5f6368">Substrate · worker pod freed</text>
-  <text x="944" y="312" text-anchor="middle" font-size="9" fill="#5f6368">while idle; state in DurableDir</text>
+  <text x="944" y="312" text-anchor="middle" font-size="9" fill="#5f6368">while idle; state in the snapshot</text>
   <text x="944" y="326" text-anchor="middle" font-size="9" fill="#5f6368">resumes on the next turn</text>
 
   <!-- arrows -->

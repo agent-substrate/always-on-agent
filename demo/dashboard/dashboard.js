@@ -14,6 +14,7 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { exec } from "node:child_process";
+import http from "node:http";
 
 const app = new Hono();
 
@@ -22,6 +23,7 @@ const ATE_NS = "ate-system";
 const ATE_ENDPOINT = process.env.ATE_ENDPOINT || "api.ate-system.svc.cluster.local:443";
 const GATEWAY_URL = process.env.GATEWAY_URL || `http://openclaw-gateway.${NS}.svc.cluster.local:18789`;
 const KUBECTL_ATE = process.env.KUBECTL_ATE || "kubectl-ate";
+const ROUTER_URL = process.env.ROUTER_URL || "http://atenet-router.ate-system.svc.cluster.local:80";
 // Atespace(s) the demo actors live in (current OSS actor model). Comma-separated.
 const ATESPACES = (process.env.ATESPACES || "openclaw-demo").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -444,7 +446,56 @@ app.post("/api/reset-view", (c) => {
 // and costs both of those, so the cap is the fleet rather than a round number.
 const FLEET_SIZE = 18;
 
-const churn = { running: false, stop: false, until: 0, cycles: 0, refused: 0, reportedCycles: 0 };
+const churn = { running: false, stop: false, until: 0, cycles: 0, refused: 0, failed: 0, reportedCycles: 0 };
+
+// GET /healthz on an actor through atenet, resolving to the HTTP status once
+// the response headers arrive, or 0 if the request never got one. It carries
+// both addresses atenet has used: release-0.1 routes by Host and main only by
+// ate-target-actor, and each ignores the other. node:http rather than fetch,
+// because fetch quietly replaces a Host it is given with the URL's.
+function pingActor(name, atespace, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      new URL("/healthz", ROUTER_URL),
+      {
+        headers: {
+          Host: `${name}.${atespace}.actors.resources.substrate.ate.dev`,
+          "ate-target-actor": `${atespace}/${name}`,
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode || 0);
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", () => resolve(0));
+  });
+}
+
+// release-0.1's kubectl-ate spells the flag --template-ref and main's spells it
+// --template (substrate#1536); this image pins the first, a main checkout builds
+// the second. Try both, count "already exists" as success, and put any other
+// failure on the timeline: an actor that was silently never created is what
+// used to make burst report success while the pod map stayed empty.
+function createFleetActor(name, atespace) {
+  const attempt = (flag) =>
+    new Promise((resolve) =>
+      exec(
+        `${KUBECTL_ATE} create actor ${name} -a ${atespace} ${flag} openclaw-agent`,
+        { timeout: 15000 },
+        (error, _stdout, stderr) => resolve(error ? (stderr || error.message).trim() : "")
+      )
+    );
+  return (async () => {
+    let err = await attempt("--template-ref");
+    if (/unknown flag/i.test(err)) err = await attempt("--template");
+    if (!err || /already exists/i.test(err)) return true;
+    addEvent("substrate", `${name}: create failed: ${err.split("\n")[0]}`);
+    return false;
+  })();
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -477,21 +528,37 @@ function reportRefusals() {
     );
     churn.refused = 0;
   }
+  if (churn.failed > 0) {
+    addEvent(
+      "substrate",
+      `${churn.failed} resume${churn.failed === 1 ? "" : "s"} failed with something other than a refusal, and retried`
+    );
+    churn.failed = 0;
+  }
 }
 
 async function churnActor(name, atespace, hold) {
-  const url = `http://${name}.${atespace}.actors.resources.substrate.ate.dev/healthz`;
   // Start somewhere random inside the cycle so twenty loops do not fire on the
   // same tick. Without this they synchronise into a slow pulse, which looks
   // staged and hides the refusals.
   await sleep(Math.random() * hold * 2);
   while (!churn.stop && Date.now() < churn.until) {
-    let served = false;
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
-      if (r.ok) served = true;
-      else if (r.status === 503) churn.refused++;
-    } catch {}
+    const status = await pingActor(name, atespace, 30000);
+    const served = status >= 200 && status < 300;
+    if (status === 503) churn.refused++;
+    else if (status && !served) {
+      // Anything else is not the pool saying no. A 404 in particular is atenet
+      // not recognising the actor address, and every loop would otherwise
+      // retry it silently forever with an empty panel. Say so once per run.
+      if (!churn.reportedFailure) {
+        churn.reportedFailure = true;
+        // Only a 404 points at routing. A 504 is a restore that outran the
+        // router's timeout, which a cold node can do.
+        const hint = status === 404 ? "; check actor routing" : "";
+        addEvent("substrate", `${name}: atenet answered HTTP ${status}, not a refusal${hint}`);
+      }
+      churn.failed++;
+    }
 
     if (!served) {
       // Refused or timed out. Back off, with jitter so the waiting actors do
@@ -526,12 +593,9 @@ app.post("/api/churn", async (c) => {
   const names = [];
   for (let i = 1; i <= count; i++) {
     const name = `oc-agent-${i}`;
-    await runCmd(
-      `${KUBECTL_ATE} create actor ${name} -a ${atespace} --template-ref openclaw-agent 2>/dev/null || true`,
-      15000
-    );
-    names.push(name);
+    if (await createFleetActor(name, atespace)) names.push(name);
   }
+  if (names.length === 0) return c.json({ ok: false, error: "no actors could be created" }, 500);
 
   Object.assign(churn, {
     running: true,
@@ -539,6 +603,8 @@ app.post("/api/churn", async (c) => {
     until: Date.now() + seconds * 1000,
     cycles: 0,
     refused: 0,
+    failed: 0,
+    reportedFailure: false,
     reportedCycles: 0,
   });
   addEvent(
@@ -583,6 +649,8 @@ app.post("/api/churn", async (c) => {
   return c.json({ ok: true, count, seconds, hold, actors: names });
 });
 
+// Only raises the flag. The loops see it within one cycle, and the sweep that
+// runs when they finish parks the fleet, so stopping needs no sweep of its own.
 app.post("/api/churn/stop", (c) => {
   churn.stop = true;
   return c.json({ ok: true, wasRunning: churn.running, cycles: churn.cycles });
@@ -605,31 +673,20 @@ app.post("/api/burst", async (c) => {
     // wakes actors that were already sitting there suspended. It also keeps the
     // fleet panel readable on camera, where "oc-burst-3" looks like scaffolding.
     const name = `oc-agent-${i}`;
-    // Idempotent: create the actor from the golden template if it doesn't exist.
-    //
-    // The flag is --template-ref, and it resolves the name inside --atespace, so
-    // it takes a bare name. This used to pass `--template openclaw/openclaw-agent`
-    // -- a flag the CLI doesn't have, and a namespace-qualified reference it would
-    // reject anyway -- with the error swallowed by `|| true`. Burst then fired
-    // HTTP requests at actors that had never been created, and the pod map stayed
-    // empty while the button reported success.
-    await runCmd(
-      `${KUBECTL_ATE} create actor ${name} -a ${atespace} --template-ref openclaw-agent 2>/dev/null || true`,
-      15000
-    );
-    names.push(name);
+    // Idempotent: create the actor from the golden template if it doesn't
+    // exist. Only actors that exist get a request fired at them.
+    if (await createFleetActor(name, atespace)) names.push(name);
   }
   // Fire resume-on-demand at each actor (async, so it doesn't block the HTTP response).
-  // atenet routes <actor>.<atespace>.actors.resources.substrate.ate.dev to a worker.
   for (const name of names) {
-    const url = `http://${name}.${atespace}.actors.resources.substrate.ate.dev/healthz`;
     // This request is what causes the wake, and the response is the actor
     // serving, so the round trip is the resume-on-demand latency with nothing
     // inferred. It is the only place in the dashboard that can honestly time a
     // resume: everywhere else is reading a 2s poll.
     const t0 = Date.now();
-    fetch(url, { signal: AbortSignal.timeout(120000) })
-      .then((r) => {
+    pingActor(name, atespace, 120000)
+      .then((status) => {
+        const r = { status, ok: status >= 200 && status < 300 };
         // Only a served response is a sample. A 503 measures how fast the pool
         // said no, and a 504 is the timeout, not the restore.
         if (r.ok) {
@@ -658,14 +715,15 @@ app.post("/api/burst", async (c) => {
           // screen. Calling that "no worker free" contradicts the panel next to
           // it.
           addEvent("substrate", `${name}: restore outran the request timeout (HTTP 504); actor is still coming up`);
+        } else if (r.status === 0) {
+          addEvent("substrate", `${name}: resume request got no response from atenet`);
         } else if (!r.ok) {
           addEvent("substrate", `${name}: resume request failed HTTP ${r.status}`);
         }
-      })
-      .catch(() => {});
+      });
   }
-  addEvent("substrate", `Burst: fired ${count} tasks, actors now multiplexing onto the worker pool`);
-  return c.json({ ok: true, count, actors: names });
+  addEvent("substrate", `Burst: fired ${names.length} tasks, actors now multiplexing onto the worker pool`);
+  return c.json({ ok: names.length > 0, count: names.length, actors: names });
 });
 
 app.get("/", (c) =>

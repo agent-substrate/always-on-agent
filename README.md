@@ -81,8 +81,10 @@ repo.
   (`ate.dev/v1alpha1`), point the gVisor `SandboxConfig` at a runsc build that
   survives a heavy multi-process Node.js actor, and apply the control-plane
   changes below. Actors use the **atespace** model
-  (`kubectl ate create atespace <a>; kubectl ate create actor <n> -a <a> --template-ref <name>`)
-  and are reached at `<actor>.<atespace>.actors.resources.substrate.ate.dev`.
+  (`kubectl ate create atespace <a>; kubectl ate create actor <n> -a <a> --template-ref <name>`,
+  `--template` on Substrate main) and are reached through the atenet router, addressed
+  by Host `<actor>.<atespace>.actors.resources.substrate.ate.dev` on release-0.1 and by
+  the `ate-target-actor: <atespace>/<actor>` header on main. The gateway sends both.
 
 ### Substrate configuration this needs
 

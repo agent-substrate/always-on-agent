@@ -31,8 +31,9 @@
 metadata:
   # The atespace replaces the old metadata.namespace, and it must already exist.
   # It has to be the SAME atespace the actors live in: `kubectl ate create actor
-  # --template-ref` resolves the template in the actor's atespace, so a template
-  # parked in the k8s namespace instead is simply not found.
+  # --template-ref` (`--template` on main) resolves the template in the actor's
+  # atespace, so a template parked in the k8s namespace instead is simply not
+  # found.
   atespace: openclaw-demo
   name: openclaw-agent
 workerSelector:

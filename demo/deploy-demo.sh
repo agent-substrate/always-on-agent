@@ -75,6 +75,12 @@ echo "    OK: kubectl, gcloud, Substrate, kubectl-ate, bucket."
 if [ -z "$GEMINI_API_KEY" ]; then
   read -rsp "Enter your Gemini API key: " GEMINI_API_KEY; echo ""
 fi
+# Reuse the token from a previous run: the gateway pod only reads it at start, so
+# rotating it here would leave the running gateway unable to call new actors.
+if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+  OPENCLAW_GATEWAY_TOKEN=$(kubectl -n "$NAMESPACE" get secret openclaw-secrets \
+    -o jsonpath='{.data.gateway-token}' 2>/dev/null | base64 -d 2>/dev/null || true)
+fi
 GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$(openssl rand -hex 32)}"
 
 # --- [1/8] Build images (optional) ---
@@ -160,6 +166,18 @@ render "$PARENT_DIR/manifests/workerpool.yaml"    | kubectl apply -f -
 # (there is no update verb), so a re-run that changes the image, bucket or key
 # has to delete and recreate.
 kubectl ate create atespace "$ATESPACE" 2>/dev/null || echo "    atespace $ATESPACE exists, continuing..."
+# The demo actor goes first, because the template is always (re)created below
+# and an actor that outlives its template points at a golden that is gone.
+# Park it before deleting. A delete refuses an actor that is not suspended, and
+# forcing it with --any-state has to tear down the live sandbox, which on gVisor
+# can fail in `runsc delete` and leave the actor stuck DELETING. Suspend waits
+# until the actor is parked and is a no-op on one that already is. --any-state
+# stays for a CRASHED actor, which cannot be suspended.
+if kubectl ate get actor "$ACTOR_NAME" -a "$ATESPACE" &>/dev/null; then
+  echo "    Deleting existing actor $ACTOR_NAME so it is recreated from the new template..."
+  kubectl ate suspend actor "$ACTOR_NAME" -a "$ATESPACE" &>/dev/null || true
+  kubectl ate delete actor "$ACTOR_NAME" -a "$ATESPACE" --any-state
+fi
 if kubectl ate get actor-template "$TEMPLATE" -a "$ATESPACE" &>/dev/null; then
   echo "    Replacing existing actor template (templates are immutable)..."
   kubectl ate delete actor-template "$TEMPLATE" -a "$ATESPACE"
@@ -205,10 +223,11 @@ golden_ready() {
   local deadline=$((SECONDS + 420)) json snapshot err
   while ((SECONDS < deadline)); do
     if json=$(kubectl ate get actor-template "$TEMPLATE" -a "$ATESPACE" -o json 2>/dev/null); then
-      # ExternalSnapshot identifies itself by URI; there is no name field.
-      snapshot=$(jq -r '.actorTemplates[0].status.goldenSnapshotStatus.goldenSnapshot.snapshotUri // empty' <<<"$json")
+      # main prints a single get bare and names the golden by tag; release-0.1
+      # wraps it in .actorTemplates[0] and names it by snapshot URI.
+      snapshot=$(jq -r '(.status.goldenSnapshotStatus.goldenTag.name // .status.goldenSnapshotStatus.goldenSnapshot.snapshotUri // .actorTemplates[0].status.goldenSnapshotStatus.goldenSnapshot.snapshotUri // empty)' <<<"$json")
       [ -n "$snapshot" ] && { echo "    golden snapshot ready: $snapshot"; return 0; }
-      err=$(jq -r '.actorTemplates[0].status.goldenSnapshotStatus.errorMessage // empty' <<<"$json")
+      err=$(jq -r '(.status.goldenSnapshotStatus.errorMessage // .actorTemplates[0].status.goldenSnapshotStatus.errorMessage // empty)' <<<"$json")
       [ -n "$err" ] && { echo "    golden snapshot FAILED: $err" >&2; return 1; }
     fi
     sleep 5
@@ -218,8 +237,19 @@ golden_ready() {
 }
 golden_ready || echo "    (continuing anyway, the actor will resume once the golden is ready)"
 # The template is resolved in the actor's atespace, so both live in $ATESPACE.
-kubectl ate create actor "$ACTOR_NAME" --template-ref "$TEMPLATE" --atespace "$ATESPACE" 2>/dev/null \
-  || echo "    actor exists, continuing..."
+# release-0.1's kubectl-ate spells the flag --template-ref and main's spells it
+# --template (substrate#1536), so try both. Only "already exists" is fine; any
+# other failure stops here rather than leaving a demo with no actor in it.
+create_actor() {
+  local out
+  out=$(kubectl ate create actor "$ACTOR_NAME" --template-ref "$TEMPLATE" --atespace "$ATESPACE" 2>&1) && return 0
+  if grep -qi "unknown flag" <<<"$out"; then
+    out=$(kubectl ate create actor "$ACTOR_NAME" --template "$TEMPLATE" --atespace "$ATESPACE" 2>&1) && return 0
+  fi
+  grep -qi "already exists" <<<"$out" && { echo "    actor exists, continuing..."; return 0; }
+  die "creating actor $ACTOR_NAME failed: $out"
+}
+create_actor
 
 # --- [7b] Optional cron status pings (run on the always-on gateway agent) ---
 WHATSAPP_PEER="${WHATSAPP_PEER:-}"

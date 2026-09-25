@@ -236,9 +236,12 @@ Targets **current OSS Substrate** (`agent-substrate/substrate`, CRD group `ate.d
 - `WorkerPool` (`ate.dev/v1alpha1`, gVisor `SandboxClass`) + `ActorTemplate`
   (golden snapshot to GCS). runsc comes from the cluster gVisor `SandboxConfig`.
 - Actors use the **atespace** model: `kubectl ate create atespace <a>` then
-  `kubectl ate create actor <n> -a <a> --template-ref openclaw-agent`, and are
-  addressed at `<actor>.<atespace>.actors.resources.substrate.ate.dev` (atenet routes
-  restore-on-demand to worker port 80).
+  `kubectl ate create actor <n> -a <a> --template-ref openclaw-agent` (`--template` on
+  Substrate main), and are addressed through the atenet router, which routes
+  restore-on-demand to worker port 80. release-0.1 picks the actor from Host
+  `<actor>.<atespace>.actors.resources.substrate.ate.dev`; main dropped that and picks
+  it from the `ate-target-actor: <atespace>/<actor>` header. The gateway and dashboard
+  send both, so either works.
 - Real-time dashboard: lists live actors (via `kubectl-ate` per atespace), the
   golden-snapshot status, the worker-pod map (which actor is restored where), and
   live gateway/WhatsApp status.

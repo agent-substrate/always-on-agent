@@ -64,12 +64,15 @@ serving `/v1/chat/completions`; it does not load this plugin.
 | `atespace` | *(none)* | atespace the per-conversation actors are created in |
 | `template` | *(none)* | golden ActorTemplate new actors derive from, by bare name |
 | `templateForAgent` | *(none)* | optional per-persona template override, keyed by agentId |
-| `actorDomain` | `actors.resources.substrate.ate.dev` | DNS domain actors are addressed under |
+| `actorDomain` | `actors.resources.substrate.ate.dev` | domain in the `Host` sent to atenet (release-0.1 routes by it; main routes by the `ate-target-actor` header, which is always sent too) |
 | `actorToken` | *(none)* | bearer token for the actor's HTTP API |
 | `provisioner` | `ateapi` | `ateapi` (in-band gRPC, needs a podcert) or `kubectl-ate` (shell out) |
 | `kubectlAtePath` | `kubectl-ate` | path to the binary when `provisioner: "kubectl-ate"` |
 | `idleTimeoutSeconds` | 120 | idle time before the gateway suspends the actor |
 | `ateapiAddress` | `api.ate-system.svc.cluster.local:443` | Substrate control plane gRPC |
+
+Turns go to the atenet router, `http://atenet-router.ate-system.svc.cluster.local:80`
+unless the gateway's `ROUTER_URL` environment variable overrides it.
 
 ## Files
 

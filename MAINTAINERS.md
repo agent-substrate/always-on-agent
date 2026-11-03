@@ -19,7 +19,7 @@ There is no separate governance model for this repository.
 - **It builds against Substrate as released.** No fork of core, no vendored
   patch, no dependency on an unmerged change. When this integration needs
   something core does not do, the core change lands first. The running list of
-  those is in [`substrate-patches/README.md`](substrate-patches/README.md).
+  those is in [`openclaw/substrate-patches/README.md`](openclaw/substrate-patches/README.md).
 - **Gaps go upstream as issues or PRs** on
   [`agent-substrate/substrate`](https://github.com/agent-substrate/substrate),
   not as patches carried here.

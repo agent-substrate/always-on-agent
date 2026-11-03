@@ -197,13 +197,13 @@ Messaging platforms fall into two families:
 
 **Approach A: split (current).**
 
-![Approach A, split: always-on gateway + suspendable agent actor](approach-split.png)
+![Approach A, split: always-on gateway + suspendable agent actor](../../docs/approach-split.png)
 
 Channels of *both* families live in the always-on gateway; the agent actor suspends. This is uniform (the gateway holds persistent sockets and also receives inbound webhooks) and requires zero channel code changes. Always-on cost is just the lightweight gateway (and it can be made multi-tenant, amortizing per-user cost toward zero). Each wake reloads only the agent, not the channel stack.
 
 **Approach B: monolithic + suspend-aware channels (rejected).**
 
-![Approach B, monolithic: whole instance suspends, channels must be suspend-aware](approach-monolithic.png)
+![Approach B, monolithic: whole instance suspends, channels must be suspend-aware](../../docs/approach-monolithic.png)
 
 The whole instance is one suspendable actor, and the outcome splits by channel type:
 

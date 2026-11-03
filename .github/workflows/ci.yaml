@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   plugin:
-    name: plugin transpiles
+    name: openclaw plugin transpiles
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -38,20 +38,20 @@ jobs:
       # what the build actually does. It catches syntax errors and bad imports;
       # it does not type-check.
       - name: esbuild
-        working-directory: extensions/substrate
+        working-directory: openclaw/extensions/substrate
         run: |
           npm install --omit=dev
           npx --yes esbuild@0.24.2 \
             index.ts acp-runtime.ts actor-router.ts actor-provisioner.ts \
             ateapi-client.ts kubectl-ate-client.ts idle-suspender.ts \
             --format=esm --platform=node --target=node20 --outdir=/tmp/dist
-      # build/gateway.Dockerfile lists the modules to transpile by hand. A new
+      # The gateway Dockerfile lists the modules to transpile by hand. A new
       # module that nobody adds to that list is simply absent from the image,
       # and esbuild will not complain, so check the list covers the directory.
       - name: every module is in the Dockerfile's esbuild list
         run: |
-          on_disk=$(cd extensions/substrate && ls *.ts | sort)
-          in_df=$(sed -n '/npx --yes esbuild/,/--outdir=dist/p' build/gateway.Dockerfile \
+          on_disk=$(cd openclaw/extensions/substrate && ls *.ts | sort)
+          in_df=$(sed -n '/npx --yes esbuild/,/--outdir=dist/p' openclaw/build/gateway.Dockerfile \
                   | grep -oE '[a-z0-9-]+\.ts' | sort -u)
           missing=$(comm -23 <(echo "$on_disk") <(echo "$in_df"))
           if [ -n "$missing" ]; then
@@ -61,14 +61,14 @@ jobs:
           fi
 
   dashboard:
-    name: dashboard parses
+    name: openclaw dashboard parses
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-      - working-directory: demo/dashboard
+      - working-directory: openclaw/demo/dashboard
         run: |
           npm install --omit=dev
           node --check dashboard.js
@@ -100,8 +100,9 @@ jobs:
       # breaks the protocol they speak to each other.
       - name: images are pinned by digest
         run: |
-          if grep -rnE '^\s*(image|FROM)\s*:?\s+\S+:[a-zA-Z0-9._-]+\s*$' \
-               manifests/ build/*.Dockerfile demo/dashboard/k8s-manifest.yaml \
+          files=$(git ls-files '*/manifests/*.yaml' '*.Dockerfile' '*/Dockerfile' \
+                               '*/k8s-manifest.yaml')
+          if grep -nE '^\s*(image|FROM)\s*:?\s+\S+:[a-zA-Z0-9._-]+\s*$' $files \
              | grep -vE '@sha256:|golang:|node:|gcr\.io/cloud-builders|REPLACE_WITH'; then
             echo "above image references are not pinned by digest"
             exit 1

@@ -22,13 +22,19 @@ requests are new to you.
 
 ## What belongs here, and what belongs upstream
 
-This repo is an integration: it holds the OpenClaw plugin, the manifests, and
-the demo. It deliberately carries no patches against
-[`agent-substrate/substrate`](https://github.com/agent-substrate/substrate).
+This repo holds reference integrations, one directory each, plus the pattern
+they share. Nothing here is a patch against
+[`agent-substrate/substrate`](https://github.com/agent-substrate/substrate), and
+that is deliberate.
+
+A new integration is a new top-level directory with its own README. Everything
+it needs to build and deploy lives inside that directory, and the commands in
+its README are run from there. What it shares with the others is the pattern,
+not the code.
 
 If you hit a gap in the Substrate control plane, file it there rather than
 working around it here, and add a line to
-[`substrate-patches/README.md`](substrate-patches/README.md) pointing at the
+[`openclaw/substrate-patches/README.md`](openclaw/substrate-patches/README.md) pointing at the
 issue or PR. Local patches bitrot, and the workaround usually outlives the bug.
 
 Changes to OpenClaw itself go to
@@ -43,9 +49,9 @@ parses, the shell scripts pass `shellcheck` and `bash -n`, and that no file has
 picked up an em dash. You can run the same checks locally:
 
 ```bash
-npx esbuild@0.24.2 extensions/substrate/*.ts --format=esm --platform=node \
+npx esbuild@0.24.2 openclaw/extensions/substrate/*.ts --format=esm --platform=node \
   --target=node20 --outdir=/tmp/plugin-build
-shellcheck demo/deploy-demo.sh
+shellcheck openclaw/demo/deploy-demo.sh
 ```
 
 Three conventions worth knowing, because they are easy to trip over:
@@ -53,11 +59,11 @@ Three conventions worth knowing, because they are easy to trip over:
 - **Images are pinned by digest, never by tag.** Substrate snapshots require an
   `@sha256`-pinned image, and the gateway and actor must sit on the *same*
   OpenClaw base digest, since they speak OpenClaw's own protocol to each other.
-  `build/gateway.Dockerfile` and `build/actor.Dockerfile` get bumped together.
+  `openclaw/build/gateway.Dockerfile` and `openclaw/build/actor.Dockerfile` get bumped together.
 - **The Substrate commit is pinned too.** `kubectl-ate` and `ateom` speak
   internal protos to the control plane, so a floating clone drifts and fails
   with opaque errors instead of version messages. The pin lives in
-  `build/gateway.Dockerfile` and `demo/README.md`, and both move together.
+  `openclaw/build/gateway.Dockerfile` and `openclaw/demo/README.md`, and both move together.
 - **No em dashes**, in prose or in comments.
 
 ## Community guidelines

@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "EXAMPLE ONLY. Copy to fleet.json and replace with the real fleet.",
+    "Two axes, deliberately separate: a SHAPE is what an agent is (persona, model,",
+    "tools) and an AGENT is its runtime configuration (ID, channels, jobs, duty cycle).",
+    "Ten agents may share one shape, or have ten. Both are expressible here."
+  ],
+
+  "defaults": {
+    "idle_tier": "medium",
+    "timezone": "UTC"
+  },
+
+  "shapes": {
+    "generalist": {
+      "description": "General-purpose persistent agent for files, research and local tasks.",
+      "persona_file": "personas/generalist.md",
+      "tools": ["shell", "file", "memory"],
+      "model": {
+        "provider": "REPLACE_WITH_MODEL_PROVIDER",
+        "base_url": "REPLACE_WITH_MODEL_BASE_URL",
+        "default": "REPLACE_WITH_MODEL_DEFAULT"
+      }
+    },
+    "research": {
+      "description": "Longer-running literature and market scans; writes local reports.",
+      "persona_file": "personas/research.md",
+      "tools": ["shell", "file", "memory"],
+      "model": {
+        "provider": "REPLACE_WITH_MODEL_PROVIDER",
+        "base_url": "REPLACE_WITH_MODEL_BASE_URL",
+        "default": "REPLACE_WITH_MODEL_DEFAULT"
+      }
+    }
+  },
+
+  "agents": [
+    {
+      "id": "research",
+      "shape": "generalist",
+      "idle_tier": "medium",
+      "timezone": "America/Los_Angeles",
+      "channels": ["telegram:100200300"],
+      "jobs": [
+        {
+          "name": "morning-brief",
+          "cron": "45 8 * * 1-5",
+          "prompt": "Summarise anything I should know before the day starts.",
+          "deliver_to": "telegram:100200300"
+        }
+      ],
+      "duty_cycle": {
+        "_comment": "Sizing input, not deployed. A test harness under-represents idle, and idle is where the saving is.",
+        "messages_per_workday": 12,
+        "median_gap_minutes": 34,
+        "active_hours": "09:00-18:00",
+        "active_days": "Mon-Fri"
+      }
+    },
+    {
+      "id": "writing",
+      "shape": "research",
+      "idle_tier": "long",
+      "timezone": "Europe/Athens",
+      "channels": ["telegram:100200301"],
+      "jobs": [],
+      "duty_cycle": {
+        "messages_per_workday": 4,
+        "median_gap_minutes": 95,
+        "active_hours": "10:00-19:00",
+        "active_days": "Mon-Fri"
+      }
+    }
+  ]
+}

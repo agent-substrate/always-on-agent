@@ -1,0 +1,10 @@
+**
+!actor/
+!actor/**
+!gateway/
+!gateway/**
+**/__pycache__/
+**/*.pyc
+**/test_*.py
+**/selftest.py
+**/.kubectl-ate-src

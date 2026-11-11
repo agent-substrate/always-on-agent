@@ -122,7 +122,7 @@ Who maintains this and under what rules is in
 [`MAINTAINERS.md`](../MAINTAINERS.md). This repository follows the project
 [Governance](https://github.com/agent-substrate/substrate/blob/main/GOVERNANCE.md)
 and the conventions in
-[`docs/integration-repos.md`](https://github.com/agent-substrate/substrate/blob/main/docs/integration-repos.md),
+[`docs/integration-repos.md`](https://github.com/agent-substrate/substrate/blob/main/docs/project/integration-repos.md),
 rather than defining its own.
 
 ## License

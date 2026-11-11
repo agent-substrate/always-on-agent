@@ -1,0 +1,311 @@
+# Milestone 2: the standalone gateway/idle-suspender Deployment.
+# Optional for e2e (Milestone 1 drives the lifecycle manually) - this adds the automated
+# provision + resume-on-demand + idle-suspend loop so actors serve and self-suspend with zero
+# manual steps. RBAC mirrors the live openclaw-gateway (kubectl-ate needs pods/portforward to
+# reach ateapi; read access to workerpools/actortemplates for discovery).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hermes-gateway
+  namespace: hermes
+  annotations:
+    # Empty when the optional Vertex bridge is disabled. When enabled,
+    # hermesctl creates this GSA and binds this KSA through Workload Identity.
+    iam.gke.io/gcp-service-account: "REPLACE_WITH_VERTEX_SERVICE_ACCOUNT"
+---
+# The agent registry (channel routing, how long each agent stays warm,
+# what it does on a schedule) is NOT defined here. It lives in
+# k8s/hermes-agents.example.yaml and is deliberately not applied by demo/deploy_gateway.sh:
+# it contains a placeholder chat id, and applying it unedited would schedule a cron job
+# that wakes an actor every weekday to deliver to a chat that does not exist. The volume
+# below is optional, so with no ConfigMap the gateway gives every conversation its own
+# agent on the default tier - which is what the demo does.
+
+# Holds the cron scheduler's fire-time cursor across restarts, so a gateway restart
+# neither replays the schedule nor silently skips a fire. Losing it is survivable
+# (the scheduler restarts from "now"), which is why this is a small plain PVC and
+# not something more careful.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-gateway-state
+  namespace: hermes
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hermes-gateway
+rules:
+  # Pods are read in TWO namespaces and for two different reasons, so narrowing
+  # this to a Role in `hermes` breaks the second one silently.
+  #
+  #   hermes      which actor is at this address? (actor_identity.py)
+  #   ate-system  is this address the egress gateway, and therefore allowed to
+  #               say who is calling on an actor's behalf? With egress
+  #               interception on, EVERY actor's request arrives from that Pod,
+  #               so without this read nothing can be identified at all and turn
+  #               signalling is refused fleet-wide - no error, actors simply stop
+  #               reporting that they have finished and wait out the idle timeout.
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create", "get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  # actortemplates is gone from this list on purpose: the CRD was deleted on
+  # 2026-09-02 and templates now live behind the Substrate API, which authorises
+  # through ate-api-server rather than through Kubernetes RBAC. A rule naming a
+  # resource no longer served is not an error, so it would have sat here
+  # indefinitely suggesting the gateway reads templates through kubectl. It does
+  # not, and it must not: that path returns nothing rather than failing.
+  - apiGroups: ["ate.dev"]
+    resources: ["workerpools"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hermes-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hermes-gateway
+subjects:
+  - kind: ServiceAccount
+    name: hermes-gateway
+    namespace: hermes
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes-gateway
+  namespace: hermes
+  labels:
+    app: hermes-gateway
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the state PVC is ReadWriteOnce, so a new pod cannot
+  # mount it while the old one still holds it - a rolling update would deadlock.
+  # Single-replica is also still required by the Telegram long-poller (two pollers
+  # on one bot token steal each other's updates); a Chat webhook would lift both.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: hermes-gateway
+  template:
+    metadata:
+      labels:
+        app: hermes-gateway
+    spec:
+      serviceAccountName: hermes-gateway
+      containers:
+        - name: gateway
+          # GATEWAY_IMAGE in demo/env.sh, substituted by demo/deploy_gateway.sh.
+          image: REPLACE_WITH_GATEWAY_IMAGE
+          ports:
+            - containerPort: 8080
+          env:
+            # Rendered from deploy/env.sh, not hardcoded: hermesctl operates on
+            # $ATESPACE for every kubectl-ate call it makes, and a gateway that
+            # creates actors in a DIFFERENT atespace than the tooling inspects
+            # means reset-agent and the deploy's stale-actor cleanup silently
+            # act on an empty namespace while the real actors survive.
+            - name: ATESPACE
+              value: REPLACE_WITH_ATESPACE
+            # atespace/name, and the atespace half is rendered for the same reason
+            # ATESPACE above is. This used to be a hardcoded "hermes/hermes", which
+            # was only ever right while the atespace happened to be called hermes.
+            # On pass 2 it is hermes-pass2, so the gateway asked for a template in
+            # an atespace that does not exist, and the failure lands on the first
+            # turn a user sends rather than at deploy time.
+            #
+            # ateapi_client strips the atespace half back off for --template-ref,
+            # which wants a bare label; the slashed form is kept here because the
+            # older --template spelling still needs it.
+            - name: TEMPLATE
+              value: REPLACE_WITH_ATESPACE/hermes
+            # Substrate v1 accepts actor ingress only over HTTPS, from a client
+            # with a pod identity certificate whose SPIFFE ID the install allows:
+            # spiffe://cluster.local/ns/hermes/sa/hermes-gateway, passed as
+            # --ingress-allowed-spiffe-ids (hermesctl substrate-install does this).
+            # The certificate and the router's CA come from the router-client
+            # volume below.
+            - name: ATENET_ENDPOINT
+              value: https://atenet-router.ate-system.svc:443
+            # Agent registry (optional). Unset it and every conversation becomes
+            # its own agent on the default tier - the pre-registry behaviour.
+            - name: AGENTS_CONFIG
+              value: /etc/hermes/agents.json
+            # Idle policy for agents that name no tier of their own:
+            # always-on | short (60s) | medium (15m) | long (1h).
+            # Left unset here so the legacy IDLE_TIMEOUT_SECONDS below still governs.
+            # - name: IDLE_TIER_DEFAULT
+            #   value: short
+            - name: IDLE_TIMEOUT_SECONDS
+              value: "60"
+            # --- cron scheduler ---
+            # A suspended actor has no clock; the gateway holds the schedule and an
+            # inbound turn is what wakes the actor. See gateway/scheduler.py.
+            - name: CRON_STATE_PATH
+              value: /var/lib/hermes-gateway/cron-state.json
+            - name: CRON_TICK_SECONDS
+              value: "30"
+            # Missed fires older than this are dropped rather than run late - after a
+            # weekend outage, Friday's 8am brief is stale, not overdue.
+            - name: CRON_CATCHUP_SECONDS
+              value: "3600"
+            # How long a turn waits for a free worker before failing. A pool of N
+            # workers holds N *non-suspended* actors, so the (N+1)th concurrent
+            # conversation must queue; capacity comes back when the idle-suspender
+            # frees someone, which is bounded by IDLE_TIMEOUT_SECONDS.
+            - name: WORKER_WAIT_SECONDS
+              value: "120"
+            # ateapi gRPC target for kubectl-ate (avoids namespace auto-detect).
+            - name: ATE_ENDPOINT
+              value: api.ate-system.svc.cluster.local:443
+            # Gateway-only trusted-adapter key. Never mount this in actors.
+            - name: GATEWAY_INGRESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: GATEWAY_INGRESS_KEY
+                  optional: true
+            - name: API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: API_SERVER_KEY
+            # Rendered from deploy/env.sh, same as the ActorTemplate's
+            # REPLACE_WITH_MODEL. Hardcoding it here meant the gateway defaulted
+            # turns to one model while the actor was configured for another, and
+            # the gateway's value silently won.
+            - name: MODEL_DEFAULT
+              value: REPLACE_WITH_MODEL
+            # Optional internal bridge to Vertex AI. Actors call this with the
+            # API-server key they already hold; the gateway exchanges its GKE
+            # Workload Identity for short-lived Google credentials.
+            - name: VERTEX_PROXY_ENABLED
+              value: "REPLACE_WITH_VERTEX_PROXY_ENABLED"
+            - name: MODEL_PROXY_BACKEND
+              value: REPLACE_WITH_MODEL_PROXY_BACKEND
+            - name: VERTEX_PROJECT
+              value: REPLACE_WITH_PROJECT
+            - name: VERTEX_LOCATION
+              value: REPLACE_WITH_VERTEX_LOCATION
+            - name: VERTEX_MODEL
+              value: REPLACE_WITH_VERTEX_MODEL
+            - name: OPENAI_MODEL
+              value: REPLACE_WITH_OPENAI_MODEL
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: MODEL_API_KEY
+                  optional: true
+            # --- WhatsApp Cloud channel (optional) ---
+            # The channel auto-enables only when PHONE_NUMBER_ID + ACCESS_TOKEN are non-empty.
+            - name: WHATSAPP_CLOUD_PHONE_NUMBER_ID
+              value: ""                       # from Meta > WhatsApp > API Setup ("From" id)
+            - name: WHATSAPP_CLOUD_API_VERSION
+              value: v20.0
+            - name: WHATSAPP_CLOUD_WEBHOOK_PATH
+              value: /whatsapp/webhook
+            - name: WHATSAPP_CLOUD_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: WHATSAPP_CLOUD_ACCESS_TOKEN
+                  optional: true
+            - name: WHATSAPP_CLOUD_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: WHATSAPP_CLOUD_APP_SECRET
+                  optional: true
+            - name: WHATSAPP_CLOUD_VERIFY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: WHATSAPP_CLOUD_VERIFY_TOKEN
+                  optional: true
+            # --- Telegram long-poll channel (optional) ---
+            # Auto-enables when TELEGRAM_BOT_TOKEN is non-empty. Unlike WhatsApp this
+            # needs NO public endpoint: the gateway dials out to getUpdates, so a demo
+            # runs from anywhere without a tunnel or a Meta app.
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: TELEGRAM_BOT_TOKEN
+                  optional: true
+            # Comma-separated chat ids. LEAVE THIS SET IN ANY SHARED ENVIRONMENT:
+            # empty means anyone who finds the bot can spend the LLM budget.
+            - name: TELEGRAM_ALLOWED_CHAT_IDS
+              value: ""
+            # How long to wait for one turn before giving up on the HTTP request.
+            # Giving up does NOT abandon the agent: it is then held awake until it
+            # reports finishing (turn-signal plugin) or MAX_WORKING_SECONDS.
+            - name: TURN_TIMEOUT_SECONDS
+              value: "300"
+            # Set to a char count to log each outgoing turn's messages, so the
+            # prompt the model receives can be read rather than inferred.
+            - name: TURN_DEBUG_CHARS
+              value: "0"
+          volumeMounts:
+            - name: agents
+              mountPath: /etc/hermes
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/hermes-gateway
+            - name: router-client
+              mountPath: /run/router-client
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+      volumes:
+        - name: agents
+          configMap:
+            name: hermes-agents
+            optional: true
+        - name: state
+          persistentVolumeClaim:
+            claimName: hermes-gateway-state
+        # This pod's identity for atenet-router, and the CA that signs the
+        # router's serving certificate. The kubelet rotates the certificate in
+        # place; the gateway reloads it when the file changes (router_tls.py).
+        - name: router-client
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: router-trust-bundle.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-gateway
+  namespace: hermes
+spec:
+  selector:
+    app: hermes-gateway
+  ports:
+    - port: 80
+      targetPort: 8080

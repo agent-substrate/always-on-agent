@@ -42,6 +42,7 @@ architecture doc.
 | Directory | What |
 |---|---|
 | [`openclaw/`](openclaw/README.md) | [OpenClaw](https://github.com/openclaw/openclaw) personal AI assistant on GKE: a drop-in plugin, the Kubernetes manifests, the image builds and a WhatsApp demo |
+| [`hermes/`](hermes/README.md) | [Hermes Agent](https://github.com/NousResearch/hermes-agent) on GKE: a fleet of suspendable, self-improving agents behind one always-on gateway, with the manifests, actor image and busy-signal plugin |
 | `docs/` | The two approach diagrams above, which are shared rather than belonging to any one integration |
 
 Each integration directory is self-contained. Everything it needs to build and
@@ -59,7 +60,7 @@ Who maintains this and under what rules is in [`MAINTAINERS.md`](MAINTAINERS.md)
 This repository follows the project
 [Governance](https://github.com/agent-substrate/substrate/blob/main/GOVERNANCE.md)
 and the conventions in
-[`docs/integration-repos.md`](https://github.com/agent-substrate/substrate/blob/main/docs/integration-repos.md),
+[`docs/integration-repos.md`](https://github.com/agent-substrate/substrate/blob/main/docs/project/integration-repos.md),
 rather than defining its own.
 
 Nothing here is a patch against Substrate. When an integration needs something

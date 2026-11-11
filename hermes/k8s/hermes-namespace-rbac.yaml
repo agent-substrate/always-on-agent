@@ -1,0 +1,85 @@
+# Namespace + the RBAC the gateway needs.
+#
+# There used to be an `ate-api-secret-reader` Role here, letting the
+# `ate-api-server` ServiceAccount read hermes-secrets so it could resolve an
+# ActorTemplate env secretKeyRef at actor-create time. Upstream removed
+# secretKeyRef from the ActorTemplate API, so nothing in ate-system reads our
+# Secret any more and that grant is gone. The gateway still reads hermes-secrets,
+# but it does so through envFrom on its own Pod, which needs no RBAC at all.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hermes
+  labels:
+    workload: hermes
+    # Substrate v1's NetworkPolicy admits ate-api-server traffic only from
+    # namespaces with this label (and never from worker pods). Without it the
+    # gateway's kubectl-ate times out dialling the API and the gateway crash-loops
+    # on startup.
+    ate.dev/api-access: "true"
+---
+# kubectl-ate, which the gateway shells out to for every Substrate call, does not
+# use the gateway's own identity to reach ate-api-server. It mints a short-lived
+# token for the `ate-client` ServiceAccount in ate-system, audience-scoped to the
+# API server, and presents that. So the gateway needs `create` on
+# serviceaccounts/token for that one ServiceAccount, in ate-system.
+#
+# Without it the gateway does not degrade, it CRASHES on startup: create_atespace
+# is an on_startup hook, so the failure is
+#   serviceaccounts "ate-client" is forbidden: ... cannot create resource
+#   "serviceaccounts/token" ... in the namespace "ate-system"
+# followed by CrashLoopBackOff, with the images and the WorkerPool all healthy.
+#
+# resourceNames pins it to `ate-client`. Granted without that, this would be the
+# right to impersonate every ServiceAccount in the namespace that runs the
+# control plane, which is close to cluster-admin.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hermes-gateway-ate-client-token
+  namespace: ate-system
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["ate-client"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hermes-gateway-ate-client-token
+  namespace: ate-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hermes-gateway-ate-client-token
+subjects:
+  - kind: ServiceAccount
+    name: hermes-gateway
+    namespace: hermes
+---
+# Runtime callbacks resolve callers by mapping their source address to a worker
+# Pod. This read-only grant is required for lifecycle callbacks.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hermes-caller-pod-reader
+  namespace: hermes
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hermes-caller-pod-reader
+  namespace: hermes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hermes-caller-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: hermes-gateway
+    namespace: hermes

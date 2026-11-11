@@ -1,0 +1,7 @@
+*_test.go
+README.md
+k8s/
+# The local `go build` output. Nothing in the image needs it, and at ~23 MB it is
+# most of the build context. `plugin` is deliberately NOT here: that is the
+# cross-compiled linux/amd64 binary Dockerfile.prebuilt copies in.
+egress-plugin

@@ -1,0 +1,167 @@
+# The Hermes actor blueprint. atecontroller warms a golden snapshot from this, which new actors
+# start from; each actor then suspends and resumes on demand, cold-booting from its durable
+# directory on resume.
+#
+# THIS IS NO LONGER A KUBERNETES OBJECT. The ActorTemplate CRD was removed upstream on
+# 2026-09-02, so `kubectl apply -f` does not work on this file. Templates are created through
+# the Substrate API:
+#
+#     kubectl ate create actor-template -f k8s/hermes-actortemplate.yaml
+#
+# There is no apiVersion, no kind and no spec wrapper; what was under `spec` is now top level.
+# `metadata.namespace` is now `metadata.atespace`, and that is an atespace, not a Kubernetes
+# namespace. Parsing is strict, so an unknown or misspelled field errors rather than being
+# silently dropped, which is the one mercy in the change. SandboxConfig, WorkerPool and
+# CSIDriverConfig were not touched and are still CRDs.
+#
+# IMPORTANT: the template is immutable once created, and `image` MUST be @sha256-pinned.
+# The REPLACE_WITH_* values are substituted by hermesctl from deploy/env.sh; the actor image
+# is pinned to the digest read back from the registry after the build. Do not feed this file
+# to the API directly, it will not resolve. Bumping the image means a new template.
+
+metadata:
+  atespace: REPLACE_WITH_ATESPACE
+  name: hermes
+
+workerSelector:
+  matchLabels:
+    workload: hermes
+
+containers:
+  - name: agent
+    image: REPLACE_WITH_ACTOR_IMAGE
+    command:
+      - /usr/local/bin/entrypoint.sh
+    env:
+      # LLM provider key. Hermes reads the vendor variable natively; the entrypoint maps
+      # MODEL_API_KEY onto whichever one the configured provider expects, so the image is not
+      # tied to one model vendor.
+      #
+      # Substrate removed env.valueFrom.secretKeyRef from this API, so this cannot come from a
+      # Secret. It is rendered by hermesctl from deploy/env.sh.
+      #
+      # MODEL_API_KEY was originally written to render EMPTY, for a design where the egress
+      # plugin attached the key on the way out so the actor never held one. That does not work
+      # on Substrate's egress chain: the listener terminates CONNECT and then splices raw TCP,
+      # so a header the plugin adds is consumed establishing the tunnel and never reaches the
+      # model endpoint. See egress-plugin/README.md.
+      #
+      # Direct provider access therefore needs ACTOR_MODEL_KEY_INLINE=1. The safer alternative
+      # is VERTEX_PROXY_ENABLED=1: the rendered value is then only the actor's existing internal
+      # API-server key, while the gateway uses Workload Identity for the Google credential.
+      # No provider credential enters the actor or its snapshots.
+      #
+      # An in-cluster ClusterIP is also the only kind of destination this plugin can allowlist
+      # reliably, because the authority it receives is an IP and a public API's IPs move.
+      - name: MODEL_API_KEY
+        value: "REPLACE_WITH_ACTOR_MODEL_KEY"
+      # Presence of this bearer token is what enables the API server. It cannot move to egress
+      # injection: it is inbound, the token the gateway presents to the actor's API server, so
+      # nothing on the outbound path ever sees that request.
+      #
+      # Rendered inline, and that is good enough rather than merely tolerable. Substrate's
+      # atunnel ingress server already requires and verifies a client certificate and pins the
+      # peer SAN to the router's identity, failing closed, so nothing but the router can reach
+      # this API server at all. What it does not do is forward that verified identity to the
+      # workload the way the egress chain forwards XFCC, so the process cannot see who called
+      # and still needs a shared secret to gate on. The key guards a door that is already
+      # locked from the outside.
+      - name: API_SERVER_KEY
+        value: "REPLACE_WITH_API_SERVER_KEY"
+      # Overridable without rebuilding the image. Hermes does not infer the provider from the
+      # model name; it must be set explicitly, with a base URL when the provider is
+      # OpenAI-compatible.
+      - name: MODEL_PROVIDER
+        value: REPLACE_WITH_MODEL_PROVIDER
+      - name: MODEL_BASE_URL
+        value: REPLACE_WITH_MODEL_BASE_URL
+      - name: MODEL_DEFAULT
+        value: REPLACE_WITH_MODEL
+      # Where the turn-signal plugin reports that a turn has finished.
+      - name: GATEWAY_URL
+        value: http://hermes-gateway.hermes.svc.cluster.local
+      # Trust the egress MITM CA, four times over, because one is not enough.
+      #
+      # With sdsmint the egress gateway terminates the tunnelled TLS and re-originates it, so
+      # every HTTPS destination presents a certificate minted by the cluster's egress-mitm CA.
+      # Nothing in the actor image trusts that CA, so without these the FIRST thing every actor
+      # does is fail a handshake, and it presents as a plugin fault (risk 8).
+      #
+      # SSL_CERT_DIR is NOT redundant with SSL_CERT_FILE. SSL_CERT_FILE replaces OpenSSL's
+      # default certificate *file*, but the default *directory* is still scanned, so the base
+      # image's public roots stay in play unless both are set. REQUESTS_CA_BUNDLE covers
+      # requests/httpx, which ignore the OpenSSL variables and use certifi. GIT_SSL_CAINFO
+      # covers git, which the actor image ships and Hermes' tooling shells out to; it ignores
+      # all three of the others.
+      - name: SSL_CERT_FILE
+        value: /run/ate/trust-bundle.pem
+      - name: SSL_CERT_DIR
+        value: /run/ate
+      - name: REQUESTS_CA_BUNDLE
+        value: /run/ate/trust-bundle.pem
+      - name: GIT_SSL_CAINFO
+        value: /run/ate/trust-bundle.pem
+    volumeMounts:
+      # The durable directory, mounted at /data. Per Nous's disk inventory of 2026-09-04, /data
+      # is both HOME and the working directory, and everything that must survive lives under
+      # it: .hermes/state.db and its SQLite WAL sidecars, memories, skills, config.yaml,
+      # SOUL.md, sessions, and anything the agent writes directly. gVisor allows exactly one
+      # durable directory per actor, so one mount at /data covers all of it with nothing
+      # relocated.
+      - name: hermes-home
+        mountPath: /data
+      - name: ate-system-info
+        mountPath: /run/ate
+    # The golden snapshot and every resume are not "ready" until Hermes actually serves 200 here.
+    # Critical for a slow Python cold start: it keeps the golden from capturing a not-yet-serving
+    # process, and holds a resume until the restarted Hermes can take the request.
+    wakeupProbe:
+      httpGet:
+        path: /health
+        port: 80
+      # A cold boot is a full Python start of Hermes. The 30-second default is too tight
+      # for the first boot on a fresh worker.
+      timeoutSeconds: 120
+
+volumes:
+  # Durable data. The only state that survives an image change, a sandbox change, or a snapshot
+  # that turns out to be unrestorable.
+  - name: hermes-home
+    durableDir: {}
+  # The projected trust bundle the SSL_* variables above point at: the egress gateway's MITM CA,
+  # which mints the per-SNI certificates the actor sees, plus the public roots. Substrate v1
+  # always installs the MITM CA, and only allowlisted bundle names resolve; a bundle that does
+  # not resolve stops the actor from starting.
+  - name: ate-system-info
+    systemInfo:
+      dataSources:
+        - trustBundle:
+            names:
+              - egress-mitm.ate.dev
+              - system-roots.ate.dev
+            path: trust-bundle.pem
+
+# Each actor's compute size, required by Substrate v1. Sized for Hermes' own footprint: about
+# 0.8 GiB of memory at rest for a typical agent, with headroom for tool runs. Placement admits an
+# actor against these limits, so they also decide how many agents fit on a worker.
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 2147483648 # 2 GiB
+
+# The sandbox (gVisor here) is chosen by the WorkerPool this template selects, not by the
+# template. Snapshots go to the bucket the install configured (BUCKET_NAME in deploy/env.sh).
+snapshotConfig:
+  # What a snapshot captures when the actor suspends and releases its worker. VOLUMES keeps the
+  # durable directory only, so a resume cold-boots the container from the image with /data
+  # restored, and Hermes starts again from its files. That is Hermes' own design point: between
+  # turns everything it needs is on disk (sessions, memory, skills, config, the cron store).
+  # It also survives an image change, which a memory snapshot does not.
+  #
+  # MEMORY would resume the running process where it left off, at the cost of a memory image per
+  # actor and no compatibility across image changes. A process resumed in place on its own
+  # worker keeps its memory regardless of this setting.
+  #
+  # A cold boot re-runs the entrypoint, which clears the previous boot's gateway.pid, lock and
+  # state markers before Hermes starts (see actor/entrypoint.sh).
+  preferredFidelity: SNAPSHOT_FIDELITY_VOLUMES

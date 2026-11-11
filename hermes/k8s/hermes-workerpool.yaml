@@ -1,0 +1,117 @@
+# Pool of gVisor worker sandboxes that host Hermes actors.
+# Reuses the exact ateom-gvisor image proven live for OpenClaw.
+#
+# NODE SELECTION IS LOAD-BEARING - two separate failures taught us this (2026-07-27):
+#
+#  1. Never pin `kubernetes.io/hostname`. GKE recycles nodes (auto-upgrade / repair) and a
+#     hostname pin leaves every worker Pending against a node that no longer exists,
+#     silently killing resume-on-demand until someone re-pins by hand.
+#
+#  2. The node pool must have a SINGLE, FIXED CPU platform. gVisor's `runsc restore` refuses
+#     a checkpoint whose CPUID feature set is not a subset of the restoring host's
+#     ("incompatible FeatureSet: missing features: [...]"). The original `default-pool` is
+#     `e2-standard-4`, and `e2` gives no CPU-platform guarantee *and* cannot take
+#     `--min-cpu-platform` - so when the pool was recycled from Intel onto AMD Rome, every
+#     golden and per-actor snapshot became permanently unrestorable.
+#     A `--min-cpu-platform` *floor* is not sufficient either: it still lets the golden get
+#     warmed on the higher platform and then fail restoring onto the lower one.
+#     Use `c2d-standard-4` - the c2d family is AMD Milan only.
+#     Equivalent single-platform choices: c2 (Cascade Lake), c4 (Emerald Rapids).
+#
+#     Create the pool BEFORE applying this manifest (values from demo/env.sh):
+#
+#     gcloud container node-pools create substrate-workers \
+#       --cluster "$CLUSTER_NAME" --zone "$CLUSTER_LOCATION" \
+#       --machine-type c2d-standard-4 --num-nodes 3 \
+#       --image-type COS_CONTAINERD --disk-type pd-balanced --disk-size 100 \
+#       --workload-metadata=GKE_METADATA \
+#       --node-labels=substrate.ate.dev/worker=true --scopes=gke-default
+#
+#     TAINT THE POOL, and note this reverses earlier advice. The old rule was "never taint:
+#     the ate-system atelet DaemonSet carries no tolerations, and without an atelet on the
+#     node every restore fails at CallAteletRestore". That was true once and is not true now:
+#     atelet tolerates `ate.dev/sandboxClass` at 4c1b37d and still does at release-0.1
+#     (c48b3a3c), and WorkerPool takes tolerations on its worker template (below). Verify
+#     before trusting either way, and note the DaemonSet name is version-suffixed:
+#       kubectl get ds -n ate-system -o custom-columns=\
+#         NAME:.metadata.name,TOL:.spec.template.spec.tolerations
+#
+#     Prefer `--node-taints` on the node-pool CREATE, which is what deploy/hermesctl does.
+#     Retrofitting the taint onto a live pool means deleting every control-plane pod that
+#     already landed there by hand; on the pass 2 install that was Postgres, an API server,
+#     the controller, both routers and the DNS pod.
+#
+#     Tainting matters because the pool's nodeSelector only keeps OTHER things OUT of the
+#     actors' way if those things are pushed out. Untainted, the Substrate control plane
+#     schedules onto worker nodes -- on the 2026-08-24 acceptance install, Postgres, the
+#     Valkey cluster, both API servers, the controller and both routers all did. Postgres in
+#     particular serves the worker-watch change feed on a polling loop, so it is busiest at
+#     exactly the moment a burst wake is being measured.
+#
+#       gcloud container node-pools update substrate-workers \
+#         --cluster "$CLUSTER_NAME" --zone "$CLUSTER_LOCATION" \
+#         --node-taints=ate.dev/sandboxClass=gvisor:NoSchedule
+#
+#     NoSchedule does not evict what is already running: delete the control-plane pods once
+#     to make them move. The toleration below is what keeps the workers themselves eligible;
+#     applying the taint WITHOUT it leaves every worker Pending, which is the failure the old
+#     advice was really protecting against.
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: hermes
+  namespace: hermes
+  labels:
+    workload: hermes
+spec:
+  # Substrate's own gVisor worker image - this repo does not build it. It is published
+  # into YOUR registry by Substrate's installer under a ko-generated name, so it differs
+  # per install and must be @sha256-pinned. Set ATEOM_IMAGE in demo/env.sh; demo/*.sh
+  # substitute it here. To find yours:
+  #   kubectl get workerpool -A -o custom-columns=NAME:.metadata.name,IMAGE:.spec.workerImage
+  #
+  # The FIELD is workerImage, not ateomImage. It was renamed between main and
+  # release-0.1 and the CRD decodes strictly, so a manifest carrying the old name
+  # is rejected outright rather than defaulted - which is the good case. The bad
+  # case is the reverse direction, where a pool that already exists keeps running
+  # on whatever image it was created with and the rename looks like it applied.
+  workerImage: REPLACE_WITH_ATEOM_IMAGE
+  # A worker can hold exactly one non-suspended actor, so `replicas` is the ceiling on
+  # CONCURRENT conversations - not total ones (suspended actors hold nothing). At 2 the
+  # third simultaneous conversation got an instant 503 "no free workers available" from
+  # atenet, which the gateway then retried onto a *fresh* actor, so the user saw the agent
+  # forget them. The gateway now waits for a worker instead of failing
+  # (WORKER_WAIT_SECONDS), which turns that into a slow turn rather than amnesia, but the
+  # wait is bounded and then it fails anyway.
+  # ateom pods set no resource requests, so this is bounded by node RAM, not quota.
+  #
+  # 9 is for the pass 2 fleet and comes out of deploy/pool_sizing.py, which simulates the
+  # ten duty cycles in demo/fleet/fleet.example.json in their own timezones:
+  #
+  #     python3 deploy/pool_sizing.py demo/fleet/fleet.example.json
+  #
+  # Worst case over 1000 simulated weeks is 7 of the 10 agents awake at once, and 9 is
+  # that plus headroom for warming and retries. Re-run it if the duty cycles or the idle
+  # tiers change; the two are what set the number, and neither is the message count.
+  #
+  # The counter-intuitive part, which belongs in the report: mean occupancy is 1.4 workers
+  # against a peak of 7. The peak is set by the idle timeouts rather than by traffic, so an
+  # agent on the long tier sending four messages a day still holds a worker roughly a third
+  # of its working window. Suspension pays for itself on average cost, not on the ceiling.
+  #
+  # 9 needs THREE c2d-standard-4 nodes (3 workers per node), which is what the node-pool
+  # command above creates. At two the ninth worker sits Pending and the pool quietly
+  # behaves like a 6. Confirmed on the pass 2 install: 9 workers, exactly 3 per node.
+  replicas: 9
+  # The sandbox for actors on this pool. Templates no longer name one; the pool decides.
+  sandboxClasses:
+    - name: gvisor
+  template:
+    nodeSelector:
+      substrate.ate.dev/worker: "true"
+    # Pairs with the pool taint above. Exists rather than Equal so the pool can be
+    # retainted for another sandbox class without the workers going Pending.
+    tolerations:
+      - key: ate.dev/sandboxClass
+        operator: Exists
+        effect: NoSchedule

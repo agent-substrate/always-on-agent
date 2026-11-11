@@ -1,0 +1,11 @@
+name: turn-signal
+version: 2.0.0
+description: >
+  Tell the gateway when this agent has finished - the turn ended AND anything it
+  spawned (backgrounded commands, code execution, subagents) has drained - so a
+  long task is not suspended out from under it.
+author: Nous Research
+kind: standalone
+provides_hooks:
+  - pre_llm_call
+  - on_session_end

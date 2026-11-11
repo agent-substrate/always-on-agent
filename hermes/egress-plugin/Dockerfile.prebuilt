@@ -1,0 +1,23 @@
+# The same image as Dockerfile, from a binary compiled OUTSIDE the container.
+#
+# Dockerfile runs the Go toolchain as a build stage, so on an arm64 host
+# `--platform linux/amd64` runs the COMPILER under emulation. That does not
+# merely run slowly, it dies, reproducibly:
+#
+#   math/bits: compile: signal: segmentation fault
+#
+# Cross-compiling is the one thing Go needs no help with, so the fix is to do it
+# on the host and copy the result in - the pattern hermesctl already uses to
+# stage kubectl-ate into the gateway build context.
+#
+# hermesctl picks this file automatically when the host is not amd64. By hand:
+#
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+#     go build -trimpath -ldflags="-s -w" -o plugin .
+#   docker buildx build --platform linux/amd64 -f Dockerfile.prebuilt -t ... .
+#
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY plugin /plugin
+USER nonroot:nonroot
+EXPOSE 50051
+ENTRYPOINT ["/plugin"]

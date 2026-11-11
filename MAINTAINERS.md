@@ -3,7 +3,7 @@ The current maintainers of this repository are listed below.
 This repository is an integration under the `agent-substrate` organization. What
 belongs here, how it is named, and how changes to Substrate itself are handled
 are set by
-[`docs/integration-repos.md`](https://github.com/agent-substrate/substrate/blob/main/docs/integration-repos.md)
+[`docs/integration-repos.md`](https://github.com/agent-substrate/substrate/blob/main/docs/project/integration-repos.md)
 in core. Maintainer roles and how people move between them follow the project
 [Governance](https://github.com/agent-substrate/substrate/blob/main/GOVERNANCE.md).
 There is no separate governance model for this repository.

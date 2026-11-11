@@ -1,0 +1,213 @@
+# Vendored from Substrate manifests/ate-install/kind/otel-collector.yaml at 4c1b37d.
+#
+# Why this file exists. Substrate's default OTLP endpoint points at GKE's MANAGED
+# collector, in the gke-managed-otel namespace, which only exists on clusters with
+# that addon enabled. Ours does not have it, and neither did substrate-poc: that is
+# why every component there failed to resolve the collector once a minute and the
+# Aug 5 latency figures had to be recovered by scraping atelet logs. This deploys a
+# collector we own, and ATE_OTLP_ENDPOINT in deploy/env.sh points the install at it.
+#
+# It lives in otel-system, not ate-system, so reinstalling Substrate mid-pass does
+# not take the telemetry with it. Note the install DOES reset the ate-otel-config
+# ConfigMap, which is why the endpoint is passed at install time and not patched in
+# afterwards.
+#
+# Upstream is for kind, but nothing here is kind-specific: plain ClusterIP Services
+# and Deployments, no hostPath, no NodePort. Two deltas from upstream, both for a
+# soak that runs for days rather than a test that runs for minutes:
+#
+#   1. Resource requests and limits on all three containers. Upstream has none. An
+#      unbounded collector on a worker node competes with the actors it is measuring,
+#      and the failure mode we care about is worse than that: an OOMKilled collector
+#      loses evidence SILENTLY, and we would find out at the end of the soak.
+#   2. Jaeger is capped with --memory.max-traces. all-in-one holds traces in memory
+#      with a default cap high enough to matter across 100+ cycles.
+#
+# Metrics land on the collector's prometheus exporter at :8889 and traces in Jaeger
+# at :16686. Neither is exposed outside the cluster; reach them with port-forward.
+# See ACCEPTANCE-PLAN §5.2 for how they are captured as evidence.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opentelemetry-collector-config
+  namespace: otel-system
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch:
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger.otel-system.svc.cluster.local:4317
+        tls:
+          insecure: true
+      prometheus:
+        endpoint: 0.0.0.0:8889
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/jaeger, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [prometheus, debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opentelemetry-collector
+  namespace: otel-system
+  labels:
+    app: opentelemetry-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opentelemetry-collector
+  template:
+    metadata:
+      labels:
+        app: opentelemetry-collector
+    spec:
+      # Keep telemetry OFF the worker nodes. The worker pool is deliberately
+      # untainted (atelet's DaemonSet carries no tolerations), so without this
+      # the scheduler is free to put the collector on a worker, where it would
+      # compete for CPU with the very actors whose wake latency it is measuring.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: substrate.ate.dev/worker
+                operator: DoesNotExist
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.157.0@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6
+        args:
+        - --config=/conf/otel-collector-config.yaml
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+        ports:
+        - name: otlp-grpc
+          containerPort: 4317
+        - name: otlp-http
+          containerPort: 4318
+        - name: prom
+          containerPort: 8889
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: config
+        configMap:
+          name: opentelemetry-collector-config
+          items:
+          - key: otel-collector-config.yaml
+            path: otel-collector-config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opentelemetry-collector
+  namespace: otel-system
+spec:
+  type: ClusterIP
+  selector:
+    app: opentelemetry-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+  - name: prom
+    port: 8889
+    targetPort: 8889
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: otel-system
+  labels:
+    app: jaeger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      # Keep telemetry OFF the worker nodes. The worker pool is deliberately
+      # untainted (atelet's DaemonSet carries no tolerations), so without this
+      # the scheduler is free to put the collector on a worker, where it would
+      # compete for CPU with the very actors whose wake latency it is measuring.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: substrate.ate.dev/worker
+                operator: DoesNotExist
+      containers:
+      - name: jaeger
+        image: jaegertracing/all-in-one:1.55@sha256:f6b5d09073f14f76873d300f565a6691d815e81bea8e07e1dc3ff67e0596dd4e
+        args:
+        - --memory.max-traces=50000
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 2Gi
+        ports:
+        - name: otlp-grpc
+          containerPort: 4317
+        - name: otlp-http
+          containerPort: 4318
+        - name: query
+          containerPort: 16686
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: otel-system
+spec:
+  type: ClusterIP
+  selector:
+    app: jaeger
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+  - name: query
+    port: 16686
+    targetPort: 16686

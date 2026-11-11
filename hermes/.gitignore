@@ -1,0 +1,31 @@
+__pycache__/
+.DS_Store
+*.pyc
+gateway/kubectl-ate
+gateway/.kubectl-ate-src
+deploy/env.sh
+deploy/env.pass2.sh
+deploy/.actor-tag
+deploy/.agents.json
+
+# Go build output from the egress plugin. `plugin` is the cross-compiled
+# linux/amd64 binary hermesctl stages for Dockerfile.prebuilt on an arm64 host.
+egress-plugin/egress-plugin
+egress-plugin/plugin
+
+# Local environment for the demo scripts, same as deploy/env.sh above.
+demo/env.sh
+
+# Rendered by demo/fleet/render_fleet.py, relative to wherever it was run from.
+# Generated from the fleet file on every deploy, so committing it just gives two
+# sources of truth for who gets an agent.
+out/
+
+# Soak and acceptance output: JSONL logs and their reports.
+runs/
+
+# Demo recordings. They are large, and they capture the operator's workstation
+# (hostname, account, browser chrome) - fine for an invite-only viewing, not for
+# a repository that may go public.
+*.mp4
+*.webm

@@ -98,12 +98,17 @@ jobs:
       # Every image reference has to be digest-pinned: Substrate refuses to
       # snapshot a tag-pinned actor, and the gateway and actor drifting apart
       # breaks the protocol they speak to each other.
+      #
+      # Allowed by tag: language base images, which a build resolves once and
+      # then pins in the image it produces; distroless and kubectl, which are
+      # utility images in jobs and sidecars rather than anything that is ever
+      # snapshotted.
       - name: images are pinned by digest
         run: |
-          files=$(git ls-files '*/manifests/*.yaml' '*.Dockerfile' '*/Dockerfile' \
-                               '*/k8s-manifest.yaml')
+          files=$(git ls-files '*/manifests/*.yaml' '*/k8s/*.yaml' '*.Dockerfile' \
+                               '*/Dockerfile' '*/Dockerfile.*' '*/k8s-manifest.yaml')
           if grep -nE '^\s*(image|FROM)\s*:?\s+\S+:[a-zA-Z0-9._-]+\s*$' $files \
-             | grep -vE '@sha256:|golang:|node:|gcr\.io/cloud-builders|REPLACE_WITH'; then
+             | grep -vE '@sha256:|golang:|node:|python:|gcr\.io/cloud-builders|REPLACE_WITH|distroless/|kubectl:'; then
             echo "above image references are not pinned by digest"
             exit 1
           fi

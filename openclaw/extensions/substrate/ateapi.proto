@@ -13,12 +13,13 @@
 // limitations under the License.
 syntax = "proto3";
 
-// Subset of github.com/agent-substrate/substrate/pkg/proto/ateapipb needed by
-// this plugin. The package + service name MUST be `ateapi.Control` to match the
-// real server (the gRPC method path is /ateapi.Control/<Method>), and every
-// field number MUST match the server's ateapi.proto; protobuf is field-number
-// based, so a subset of fields is fine but the numbers must line up.
-package ateapi;
+// Subset of github.com/agent-substrate/substrate/api/ateapi/v1/ateapi.proto
+// (Substrate v1) needed by this plugin. The package and service name MUST be
+// `substrate.ateapi.v1.Control` to match the real server (the gRPC method path
+// is /substrate.ateapi.v1.Control/<Method>), and every field number MUST match
+// the server's ateapi.proto; protobuf is field-number based, so a subset of
+// fields is fine but the numbers must line up.
+package substrate.ateapi.v1;
 
 service Control {
   rpc GetActor(GetActorRequest) returns (Actor) {}
@@ -41,8 +42,7 @@ message ResourceMetadata {
 // Subset of Actor: identity + which ActorTemplate (golden) to derive from.
 message Actor {
   ResourceMetadata metadata = 1;
-  string actor_template_namespace = 2;
-  string actor_template_name = 3;
+  ObjectRef actor_template = 2;
 }
 
 message GetActorRequest { ObjectRef actor = 1; }

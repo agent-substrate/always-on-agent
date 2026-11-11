@@ -21,10 +21,30 @@
  * the kubectl-ate binary in the pod + RBAC for pods/portforward.
  */
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import type { ActorRef, AteApiClient } from "./ateapi-client.js";
 
 const pexec = promisify(execFile);
+
+const DEFAULT_EGRESS_POLICY = `rules:
+- http: {hostnames: ["*"], ports: {all: {}}}
+- https: {hostnames: ["*"]}
+`;
+
+let defaultPolicyPath: string | undefined;
+
+/** EGRESS_POLICY_FILE, or the allow-all default written once to a temp file. */
+function egressPolicyFile(): string {
+  if (process.env.EGRESS_POLICY_FILE) return process.env.EGRESS_POLICY_FILE;
+  if (!defaultPolicyPath) {
+    defaultPolicyPath = path.join(os.tmpdir(), "openclaw-egress-policy.yaml");
+    fs.writeFileSync(defaultPolicyPath, DEFAULT_EGRESS_POLICY);
+  }
+  return defaultPolicyPath;
+}
 
 export function createKubectlAteClient(cfg: { binPath?: string; endpoint?: string } = {}): AteApiClient {
   const bin = cfg.binPath || process.env.KUBECTL_ATE || "kubectl-ate";
@@ -40,31 +60,37 @@ export function createKubectlAteClient(cfg: { binPath?: string; endpoint?: strin
 
   return {
     async createActor(ref: ActorRef, _templateNamespace: string, templateName: string) {
+      const errText = (err: unknown) =>
+        String((err as { stderr?: string })?.stderr ?? (err as Error)?.message ?? err);
+      // v1 spells the flag --template; release-0.1 spelled it --template-ref.
+      // Both resolve a bare name inside the actor's atespace.
       try {
-        await run([
-          "create", "actor", ref.name,
-          "-a", ref.atespace,
-          // release-0.1 spells it --template-ref; main renamed it to --template
-          // (substrate#1536). Both resolve a bare name inside the actor's atespace.
-          "--template-ref", templateName,
-        ]);
+        await run(["create", "actor", ref.name, "-a", ref.atespace, "--template", templateName]);
       } catch (err) {
-        const msg = String((err as { stderr?: string })?.stderr ?? (err as Error)?.message ?? err);
-        if (/unknown flag: --template-ref/i.test(msg)) {
+        const msg = errText(err);
+        if (/unknown flag: --template/i.test(msg)) {
           try {
-            await run([
-              "create", "actor", ref.name,
-              "-a", ref.atespace,
-              "--template", templateName,
-            ]);
-            return;
+            await run(["create", "actor", ref.name, "-a", ref.atespace, "--template-ref", templateName]);
           } catch (err2) {
-            const msg2 = String((err2 as { stderr?: string })?.stderr ?? (err2 as Error)?.message ?? err2);
-            if (/already exists/i.test(msg2)) return;
-            throw err2;
+            if (!/already exists/i.test(errText(err2))) throw err2;
           }
+        } else if (!/already exists/i.test(msg)) {
+          throw err;
         }
-        if (/already exists/i.test(msg)) return; // idempotent
+      }
+      // Substrate v1 denies an actor's outbound traffic until it has an egress
+      // policy, and OpenClaw needs its model API, channels and tools. The
+      // default allows any host over HTTP and HTTPS, which matches release-0.1;
+      // point EGRESS_POLICY_FILE at a tighter manifest, or set EGRESS_POLICY=off
+      // to manage policies yourself. Created before the first turn, because a
+      // missing policy is cached as deny for a few seconds.
+      if ((process.env.EGRESS_POLICY || "on").toLowerCase() === "off") return;
+      try {
+        await run(["create", "egress-policy", ref.name, "-a", ref.atespace, "-f", egressPolicyFile()]);
+      } catch (err) {
+        const msg = errText(err);
+        if (/already exists/i.test(msg)) return;
+        if (/unknown command/i.test(msg)) return; // release-0.1 has no egress policies
         throw err;
       }
     },

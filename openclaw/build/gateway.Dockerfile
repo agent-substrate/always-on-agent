@@ -21,9 +21,9 @@
 # today: the toolchain is not auto-downloadable in this build environment, so a
 # repo bump to a newer Go fails the build outright.
 FROM golang:1.27-bookworm AS ate
-# Head of the `release-0.1` branch, pinned by SHA rather than by branch name:
-# release-0.1 was cut clean off main and still moves as fixes are picked into it.
-ARG SUBSTRATE_REF=c48b3a3c
+# The Substrate v1.0.0 release tag, matching the control plane deploy-demo.sh
+# installs from the release images.
+ARG SUBSTRATE_REF=v1.0.0
 RUN git clone --filter=blob:none https://github.com/agent-substrate/substrate.git /src \
  && cd /src && git checkout "$SUBSTRATE_REF" \
  && CGO_ENABLED=0 go build -o /out/kubectl-ate ./cmd/kubectl-ate

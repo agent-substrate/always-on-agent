@@ -130,6 +130,28 @@ spec:
             limits:
               memory: 128Mi
               cpu: 100m
+          volumeMounts:
+            - name: router-client
+              mountPath: /run/router-client
+              readOnly: true
+      volumes:
+        # The dashboard pings actors through atenet-router, which on Substrate v1
+        # accepts only HTTPS from a pod identity certificate on the install's
+        # allowlist (spiffe://cluster.local/ns/openclaw/sa/openclaw-dashboard,
+        # set by deploy-demo.sh).
+        - name: router-client
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: router-trust-bundle.pem
 ---
 apiVersion: v1
 kind: Service

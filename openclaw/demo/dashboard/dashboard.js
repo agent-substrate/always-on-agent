@@ -14,7 +14,11 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { exec } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
+import https from "node:https";
+import os from "node:os";
+import path from "node:path";
 
 const app = new Hono();
 
@@ -23,7 +27,22 @@ const ATE_NS = "ate-system";
 const ATE_ENDPOINT = process.env.ATE_ENDPOINT || "api.ate-system.svc.cluster.local:443";
 const GATEWAY_URL = process.env.GATEWAY_URL || `http://openclaw-gateway.${NS}.svc.cluster.local:18789`;
 const KUBECTL_ATE = process.env.KUBECTL_ATE || "kubectl-ate";
-const ROUTER_URL = process.env.ROUTER_URL || "http://atenet-router.ate-system.svc.cluster.local:80";
+// Substrate v1 serves actor ingress only over HTTPS, to a client with a pod
+// identity certificate on the install's allowlist (see k8s-manifest.yaml).
+const ROUTER_URL = process.env.ROUTER_URL || "https://atenet-router.ate-system.svc:443";
+const ROUTER_CLIENT_BUNDLE = process.env.ROUTER_CLIENT_BUNDLE || "/run/router-client/credential-bundle.pem";
+const ROUTER_TRUST_BUNDLE = process.env.ROUTER_TRUST_BUNDLE || "/run/router-client/router-trust-bundle.pem";
+let routerTls;
+// An https.Agent with the current certificate, rebuilt when the kubelet rotates it.
+function routerAgent() {
+  const key = `${fs.statSync(ROUTER_CLIENT_BUNDLE).mtimeMs}:${fs.statSync(ROUTER_TRUST_BUNDLE).mtimeMs}`;
+  if (!routerTls || routerTls.key !== key) {
+    const pem = fs.readFileSync(ROUTER_CLIENT_BUNDLE);
+    routerTls?.agent.destroy();
+    routerTls = { key, agent: new https.Agent({ keepAlive: true, key: pem, cert: pem, ca: fs.readFileSync(ROUTER_TRUST_BUNDLE) }) };
+  }
+  return routerTls.agent;
+}
 // Atespace(s) the demo actors live in (current OSS actor model). Comma-separated.
 const ATESPACES = (process.env.ATESPACES || "openclaw-demo").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -455,13 +474,25 @@ const churn = { running: false, stop: false, until: 0, cycles: 0, refused: 0, fa
 // because fetch quietly replaces a Host it is given with the URL's.
 function pingActor(name, atespace, timeoutMs) {
   return new Promise((resolve) => {
-    const req = http.get(
-      new URL("/healthz", ROUTER_URL),
+    const url = new URL("/healthz", ROUTER_URL);
+    const tls = url.protocol === "https:";
+    let agent;
+    try {
+      agent = tls ? routerAgent() : undefined;
+    } catch {
+      resolve(0); // certificate not projected yet
+      return;
+    }
+    const req = (tls ? https : http).get(
+      url,
       {
+        // v1 routes only on ate-target-actor; Host routing is release-0.1 and
+        // plain HTTP only.
         headers: {
-          Host: `${name}.${atespace}.actors.resources.substrate.ate.dev`,
+          ...(tls ? {} : { Host: `${name}.${atespace}.actors.resources.substrate.ate.dev` }),
           "ate-target-actor": `${atespace}/${name}`,
         },
+        agent,
         timeout: timeoutMs,
       },
       (res) => {
@@ -474,11 +505,19 @@ function pingActor(name, atespace, timeoutMs) {
   });
 }
 
-// release-0.1's kubectl-ate spells the flag --template-ref and main's spells it
-// --template (substrate#1536); this image pins the first, a main checkout builds
-// the second. Try both, count "already exists" as success, and put any other
+// v1's kubectl-ate spells the flag --template, release-0.1's spelled it
+// --template-ref (substrate#1536). Try both, count "already exists" as success, and put any other
 // failure on the timeline: an actor that was silently never created is what
 // used to make burst report success while the pod map stayed empty.
+let egressPolicyPath;
+function egressPolicyFile() {
+  if (!egressPolicyPath) {
+    egressPolicyPath = path.join(os.tmpdir(), "openclaw-egress-policy.yaml");
+    fs.writeFileSync(egressPolicyPath, 'rules:\n- http: {hostnames: ["*"], ports: {all: {}}}\n- https: {hostnames: ["*"]}\n');
+  }
+  return egressPolicyPath;
+}
+
 function createFleetActor(name, atespace) {
   const attempt = (flag) =>
     new Promise((resolve) =>
@@ -489,11 +528,27 @@ function createFleetActor(name, atespace) {
       )
     );
   return (async () => {
-    let err = await attempt("--template-ref");
-    if (/unknown flag/i.test(err)) err = await attempt("--template");
-    if (!err || /already exists/i.test(err)) return true;
-    addEvent("substrate", `${name}: create failed: ${err.split("\n")[0]}`);
-    return false;
+    let err = await attempt("--template");
+    if (/unknown flag/i.test(err)) err = await attempt("--template-ref");
+    if (err && !/already exists/i.test(err)) {
+      addEvent("substrate", `${name}: create failed: ${err.split("\n")[0]}`);
+      return false;
+    }
+    // Substrate v1 denies an actor's egress until it has a policy; allow any
+    // host over HTTP and HTTPS, as release-0.1 did. "unknown command" is
+    // release-0.1, which has no egress policies.
+    const perr = await new Promise((resolve) =>
+      exec(
+        `${KUBECTL_ATE} create egress-policy ${name} -a ${atespace} -f ${egressPolicyFile()}`,
+        { timeout: 15000 },
+        (error, _stdout, stderr) => resolve(error ? (stderr || error.message).trim() : "")
+      )
+    );
+    if (perr && !/already exists|unknown command/i.test(perr)) {
+      addEvent("substrate", `${name}: egress policy failed: ${perr.split("\n")[0]}`);
+      return false;
+    }
+    return true;
   })();
 }
 

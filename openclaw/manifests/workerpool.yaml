@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # WorkerPool for the OpenClaw agent actors (Agent Substrate, current OSS schema:
-# ate.dev/v1alpha1). Worker pods run the gVisor ateom (workerImage). The runsc
+# ate.dev/v1). Worker pods run the gVisor worker (workerImage, cmd/ateworker-gvisor). The runsc
 # binary is NOT pinned here. It comes from the cluster's gVisor SandboxConfig
 # (see NOTE below). The ActorTemplate's workerSelector matches this pool's label.
 #
 # WorkerPool is still a Kubernetes CRD and is applied with `kubectl apply`. The
 # ActorTemplate next to it is NOT: it became a substrate-native resource and is
 # created through the ate API. See manifests/actortemplate.yaml.
-apiVersion: ate.dev/v1alpha1
+apiVersion: ate.dev/v1
 kind: WorkerPool
 metadata:
   name: openclaw
@@ -43,7 +43,8 @@ spec:
   # InvalidImageName.
   # Renamed from `ateomImage` upstream; `ateomImage` is now rejected.
   workerImage: REPLACE_WITH_ATEOM_IMAGE
-  sandboxClass: gvisor
+  sandboxClasses:
+    - name: gvisor
   # Optional: pin workers to a node pool and size them.
   # template:
   #   spec:

@@ -28,13 +28,16 @@ GCS_BUCKET="${GCS_BUCKET:-}"                        # required: bucket for golde
 GEMINI_API_KEY="${GEMINI_API_KEY:-}"               # required: LLM provider key (prompted if unset)
 IMAGE_TAG="${IMAGE_TAG:-demo}"                      # tag the images are built/pushed under
 BUILD_IMAGES="${BUILD_IMAGES:-auto}"               # auto | true | false
-SUBSTRATE_REPO="${SUBSTRATE_REPO:-}"               # path to your substrate clone (needed to build ateom)
-ATEOM_IMAGE="${ATEOM_IMAGE:-}"                     # optional: prebuilt ateom-gvisor image; else built from SUBSTRATE_REPO
+SUBSTRATE_REPO="${SUBSTRATE_REPO:-}"               # path to a substrate checkout at ATE_IMAGE_TAG (only needed to install Substrate)
+ATE_IMAGE_REPO="${ATE_IMAGE_REPO:-ghcr.io/agent-substrate/substrate}"  # published release images
+ATE_IMAGE_TAG="${ATE_IMAGE_TAG:-v1.0.0}"           # Substrate release to install and run on
+ATEOM_IMAGE="${ATEOM_IMAGE:-}"                     # optional: worker image override; else the release's ateworker-gvisor
 NAMESPACE="openclaw"
 ATESPACE="openclaw-demo"
 ACTOR_NAME="oc-agent"
 TEMPLATE="openclaw-agent"                           # ActorTemplate name; lives in ATESPACE, not in a k8s namespace
 DEPLOY_DASHBOARD="${DEPLOY_DASHBOARD:-true}"       # the live lifecycle dashboard (LoadBalancer)
+WHATSAPP_PEER="${WHATSAPP_PEER:-}"                 # required: E.164 number that will message the agent (keys the ACP binding)
 GATEWAY_IMAGE="gcr.io/${PROJECT_ID}/openclaw-gateway"
 ACTOR_IMAGE="gcr.io/${PROJECT_ID}/openclaw-actor"
 DASHBOARD_IMAGE="gcr.io/${PROJECT_ID}/openclaw-dashboard"
@@ -52,21 +55,35 @@ need gcloud
 [ -n "$PROJECT_ID" ] || die "Set PROJECT_ID (your GCP project). e.g. export PROJECT_ID=my-project"
 [ -n "$GCS_BUCKET" ] || die "Set GCS_BUCKET (snapshot bucket, no gs:// prefix). e.g. export GCS_BUCKET=my-bucket"
 
+# Substrate v1 accepts actor ingress only from clients on this allowlist: the
+# gateway (turns) and the dashboard (health pings).
+INGRESS_IDS="spiffe://cluster.local/ns/${NAMESPACE}/sa/openclaw-gateway,spiffe://cluster.local/ns/${NAMESPACE}/sa/openclaw-dashboard"
 if ! kubectl get namespace ate-system &>/dev/null; then
-  if [ -n "$SUBSTRATE_REPO" ] && [ -f "$SUBSTRATE_REPO/hack/install-ate.sh" ]; then
-    echo "    Substrate not found; installing from $SUBSTRATE_REPO ..."
-    (cd "$SUBSTRATE_REPO" && bash hack/install-ate.sh --deploy-ate-system)
+  if [ -n "$SUBSTRATE_REPO" ] && [ -d "$SUBSTRATE_REPO/cmd/ate-setup" ]; then
+    need go
+    echo "    Substrate not found; installing ${ATE_IMAGE_TAG} release images from $SUBSTRATE_REPO ..."
+    # --context installs into the cluster kubectl points at now; without it,
+    # ate-setup wants CLUSTER_NAME and CLUSTER_LOCATION alongside PROJECT_ID.
+    (cd "$SUBSTRATE_REPO" && \
+      BUCKET_NAME="$GCS_BUCKET" SNAPSHOT_LOCATION="gs://${GCS_BUCKET}/openclaw/" \
+      SNAPSHOT_TRANSFER_GSA_NAME="${SNAPSHOT_TRANSFER_GSA_NAME:-ate-snapshot-transfer}" \
+      ATE_IMAGE_REPO="$ATE_IMAGE_REPO" ATE_IMAGE_TAG="$ATE_IMAGE_TAG" NO_DEV_ENV=1 \
+      go run ./cmd/ate-setup deploy ate-system \
+        --context "$(kubectl config current-context)" \
+        --credential-provider='{"name":"k8s.io"}' \
+        --ingress-allowed-spiffe-ids="$INGRESS_IDS")
   else
     die "Agent Substrate is not installed (no ate-system namespace).
-  Install it first from a clone of github.com/agent-substrate/substrate:
-    cd substrate && hack/install-ate.sh --deploy-ate-system
-  Or set SUBSTRATE_REPO=/path/to/substrate to have this script install it."
+  Install it first from a checkout of github.com/agent-substrate/substrate at ${ATE_IMAGE_TAG}
+  (go run ./cmd/ate-setup deploy ate-system ..., see demo/README.md), with
+  --ingress-allowed-spiffe-ids=${INGRESS_IDS}
+  Or set SUBSTRATE_REPO=/path/to/that/checkout to have this script install it."
   fi
 fi
 kubectl -n ate-system get deployment ate-api-server &>/dev/null \
   || die "ate-api-server not found in ate-system; Substrate may be partially installed."
 if ! command -v kubectl-ate &>/dev/null && ! kubectl ate --version &>/dev/null 2>&1; then
-  die "kubectl-ate CLI not found. Build it from the Substrate repo (make build-atectl) and put bin/kubectl-ate on your PATH."
+  die "kubectl-ate CLI not found. Build it from the Substrate repo at ${ATE_IMAGE_TAG} (go install ./cmd/kubectl-ate) and put it on your PATH."
 fi
 gcloud storage ls "gs://${GCS_BUCKET}" &>/dev/null \
   || die "Bucket gs://${GCS_BUCKET} not reachable. Create it:  gcloud storage buckets create gs://${GCS_BUCKET} --project ${PROJECT_ID}"
@@ -85,20 +102,39 @@ GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$(openssl rand -hex 32)}"
 
 # --- [1/8] Build images (optional) ---
 image_exists() { gcloud container images describe "$1:$IMAGE_TAG" &>/dev/null; }
+# Submit a Cloud Build and wait for it by polling its status. `gcloud builds
+# submit` without --async streams the build log, which needs Viewer on the
+# project's default logs bucket; without it gcloud exits non-zero while the
+# build itself carries on and succeeds.
+cloud_build() {
+  local id status
+  id=$(gcloud builds submit --project "$PROJECT_ID" --config "$1" --async \
+         --format='value(id)' .) || die "could not submit Cloud Build $1"
+  echo "    cloud build $id"
+  while :; do
+    status=$(gcloud builds describe "$id" --project "$PROJECT_ID" --format='value(status)')
+    case "$status" in
+      SUCCESS) return 0 ;;
+      FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+        die "Cloud Build $id ended $status (gcloud builds log $id --project $PROJECT_ID)" ;;
+    esac
+    sleep 10
+  done
+}
 if [ "$BUILD_IMAGES" = "true" ] || { [ "$BUILD_IMAGES" = "auto" ] && ! image_exists "$GATEWAY_IMAGE"; }; then
   echo "[1/8] Building images with Cloud Build (tag: $IMAGE_TAG)..."
   ( cd "$PARENT_DIR" && \
     sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-gateway.yaml >/tmp/cb-gw.yaml && \
-    gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-gw.yaml . )
+    cloud_build /tmp/cb-gw.yaml )
   # The actor image builds FROM the public OpenClaw release, so only the output
   # tag needs substituting, so no temp Dockerfile.
   ( cd "$PARENT_DIR" && \
     sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-actor.yaml >/tmp/cb-actor.yaml && \
-    gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-actor.yaml . )
+    cloud_build /tmp/cb-actor.yaml )
   if [ "$DEPLOY_DASHBOARD" = "true" ]; then
     ( cd "$PARENT_DIR" && \
       sed "s|REPLACE_WITH_YOUR_PROJECT|$PROJECT_ID|g; s|:demo\"|:$IMAGE_TAG\"|g" build/cloudbuild-dashboard.yaml >/tmp/cb-dash.yaml && \
-      gcloud builds submit --project "$PROJECT_ID" --config /tmp/cb-dash.yaml . )
+      cloud_build /tmp/cb-dash.yaml )
   fi
 else
   echo "[1/8] Skipping build (images present; set BUILD_IMAGES=true to force)."
@@ -121,18 +157,15 @@ if [ "$DEPLOY_DASHBOARD" = "true" ]; then
   echo "    dash    @ ${DASHBOARD_DIGEST}"
 fi
 
-# The worker pods' ateom must be built from the SAME Substrate commit the control
-# plane was installed from. ateom speaks internal protos to atelet/ateapi, and a
-# skewed build fails golden resume with an opaque error rather than a version
-# message. Building it here from your checkout is what keeps the two in step.
+# The worker image has to match the control plane, so use the release's own
+# ateworker-gvisor, pinned to the digest its tag names now.
 if [ -z "$ATEOM_IMAGE" ]; then
-  [ -n "$SUBSTRATE_REPO" ] || die "Set SUBSTRATE_REPO=/path/to/substrate (the clone you installed Substrate from) so ateom can be built to match, or set ATEOM_IMAGE to a prebuilt image from that same commit."
-  need ko
-  echo "    Building ateom-gvisor from $SUBSTRATE_REPO ($(git -C "$SUBSTRATE_REPO" rev-parse --short HEAD 2>/dev/null || echo unknown))..."
-  ATEOM_IMAGE="$(cd "$SUBSTRATE_REPO" && KO_DOCKER_REPO="gcr.io/${PROJECT_ID}/ate-images" ko build --bare=false --platform=linux/amd64 ./cmd/ateom-gvisor)" \
-    || die "ko build of ./cmd/ateom-gvisor failed in $SUBSTRATE_REPO."
+  need crane
+  WORKER_DIGEST="$(crane digest "${ATE_IMAGE_REPO}/ateworker-gvisor:${ATE_IMAGE_TAG}")" \
+    || die "could not resolve ${ATE_IMAGE_REPO}/ateworker-gvisor:${ATE_IMAGE_TAG}"
+  ATEOM_IMAGE="${ATE_IMAGE_REPO}/ateworker-gvisor@${WORKER_DIGEST}"
 fi
-echo "    ateom   = ${ATEOM_IMAGE}"
+echo "    worker  = ${ATEOM_IMAGE}"
 
 # render: substitute project, bucket, and digests into a manifest, print to stdout.
 render() {
@@ -168,15 +201,13 @@ render "$PARENT_DIR/manifests/workerpool.yaml"    | kubectl apply -f -
 kubectl ate create atespace "$ATESPACE" 2>/dev/null || echo "    atespace $ATESPACE exists, continuing..."
 # The demo actor goes first, because the template is always (re)created below
 # and an actor that outlives its template points at a golden that is gone.
-# Park it before deleting. A delete refuses an actor that is not suspended, and
-# forcing it with --any-state has to tear down the live sandbox, which on gVisor
-# can fail in `runsc delete` and leave the actor stuck DELETING. Suspend waits
-# until the actor is parked and is a no-op on one that already is. --any-state
-# stays for a CRASHED actor, which cannot be suspended.
+# Park it before deleting. A delete refuses an actor that is running, and
+# suspend waits until the actor is parked and is a no-op on one that already is.
+# A CRASHED actor cannot be suspended but is deletable as it stands.
 if kubectl ate get actor "$ACTOR_NAME" -a "$ATESPACE" &>/dev/null; then
   echo "    Deleting existing actor $ACTOR_NAME so it is recreated from the new template..."
   kubectl ate suspend actor "$ACTOR_NAME" -a "$ATESPACE" &>/dev/null || true
-  kubectl ate delete actor "$ACTOR_NAME" -a "$ATESPACE" --any-state
+  kubectl ate delete actor "$ACTOR_NAME" -a "$ATESPACE"
 fi
 if kubectl ate get actor-template "$TEMPLATE" -a "$ATESPACE" &>/dev/null; then
   echo "    Replacing existing actor template (templates are immutable)..."
@@ -237,22 +268,26 @@ golden_ready() {
 }
 golden_ready || echo "    (continuing anyway, the actor will resume once the golden is ready)"
 # The template is resolved in the actor's atespace, so both live in $ATESPACE.
-# release-0.1's kubectl-ate spells the flag --template-ref and main's spells it
-# --template (substrate#1536), so try both. Only "already exists" is fine; any
-# other failure stops here rather than leaving a demo with no actor in it.
+# v1's kubectl-ate spells the flag --template (release-0.1 spelled it
+# --template-ref). Only "already exists" is fine; any other failure stops here.
+# The actor also needs an egress policy on v1, which denies its outbound
+# traffic until it has one; allow any host over HTTP and HTTPS.
 create_actor() {
   local out
-  out=$(kubectl ate create actor "$ACTOR_NAME" --template-ref "$TEMPLATE" --atespace "$ATESPACE" 2>&1) && return 0
-  if grep -qi "unknown flag" <<<"$out"; then
-    out=$(kubectl ate create actor "$ACTOR_NAME" --template "$TEMPLATE" --atespace "$ATESPACE" 2>&1) && return 0
-  fi
-  grep -qi "already exists" <<<"$out" && { echo "    actor exists, continuing..."; return 0; }
-  die "creating actor $ACTOR_NAME failed: $out"
+  out=$(kubectl ate create actor "$ACTOR_NAME" --template "$TEMPLATE" --atespace "$ATESPACE" 2>&1) \
+    || grep -qi "already exists" <<<"$out" \
+    || die "creating actor $ACTOR_NAME failed: $out"
+  out=$(kubectl ate create egress-policy "$ACTOR_NAME" --atespace "$ATESPACE" -f - 2>&1 <<'POLICY'
+rules:
+- http: {hostnames: ["*"], ports: {all: {}}}
+- https: {hostnames: ["*"]}
+POLICY
+) || grep -qi "already exists" <<<"$out" \
+    || die "creating egress policy for $ACTOR_NAME failed: $out"
 }
 create_actor
 
 # --- [7b] Optional cron status pings (run on the always-on gateway agent) ---
-WHATSAPP_PEER="${WHATSAPP_PEER:-}"
 if [ -n "$WHATSAPP_PEER" ]; then
   echo "    Creating cron status pings to $WHATSAPP_PEER ..."
   GW_POD=$(kubectl -n "$NAMESPACE" get pod -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}')

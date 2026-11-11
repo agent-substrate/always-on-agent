@@ -67,7 +67,7 @@ Everything in the system falls into three buckets. The integration adds a small 
 | `atecontroller` | Reconciles ActorTemplate/WorkerPool; captures the golden snapshot |
 | `atenet` (Envoy + ext_proc) | Routes to actors; resume-on-demand on the first request |
 | `atelet` (per-node DaemonSet) | Manages worker pods; snapshot ↔ GCS |
-| `ateom-gvisor` (worker PID1) | Runs `runsc` create / start / checkpoint / restore |
+| `ateworker-gvisor` (worker PID1) | Runs `runsc` create / start / checkpoint / restore |
 | CRDs: WorkerPool, ActorTemplate, SandboxConfig (`ate.dev`) | Declarative actor / worker / sandbox config |
 | `kubectl-ate` CLI, gVisor / `runsc` | Tooling + sandbox runtime |
 
@@ -87,7 +87,7 @@ Everything in the system falls into three buckets. The integration adds a small 
 1. User sends a WhatsApp message.
 2. The gateway's WhatsApp plugin receives it over its always-on persistent connection.
 3. The ACP bindings router sends the turn to `SubstrateAcpRuntime`, which issues an HTTP POST to the actor's atenet URL.
-4. atenet's ext_proc inspects the Host header; if the actor is SUSPENDED it calls `ateapi.ResumeActor()`, which restores the gVisor snapshot from GCS before the request is forwarded. See *Measured latency* below for what that costs.
+4. atenet's ext_proc reads the `ate-target-actor` header; if the actor is SUSPENDED it calls `ateapi.ResumeActor()`, which restores the gVisor snapshot from GCS before the request is forwarded. See *Measured latency* below for what that costs.
 5. The actor's `/v1/chat/completions` endpoint runs the full agentic loop (Gemini), streaming the reply back as Server-Sent Events.
 6. The gateway relays the reply to the WhatsApp plugin, which sends it to the user.
 7. After the idle window with no in-flight turn for that actor, the **gateway** calls `ateapi.SuspendActor()` (via the same control-plane path it uses to create/resume); the worker pod is freed. Suspend is gateway-driven because a sandboxed actor holds no control-plane credentials: Substrate projects its identity into the sandbox but no podcert, cert or JWT, so it has nothing to authenticate with. The gateway already has both the credentials and the activity signal (it dispatches every turn and sees every reply).
@@ -226,22 +226,25 @@ That is why we chose the split.
 
 ## Deployment (GKE)
 
-Targets **current OSS Substrate** (`agent-substrate/substrate`, CRD group `ate.dev`).
+Targets **Agent Substrate v1.0.0** (`agent-substrate/substrate`, CRD group `ate.dev/v1`).
 
-- Control plane: `ateapi`, `atecontroller`, `atenet`, `atelet` (DaemonSet), `ateom-gvisor`
-  deployed via `hack/install-ate.sh --deploy-ate-system` (ko-built), with the
-  control-plane changes listed in the top-level README.
+- Control plane: `ateapi`, `atecontroller`, `atenet`, `atelet` (DaemonSet), installed
+  with `ate-setup deploy ate-system` from the published release images, with the
+  gateway and dashboard on the router's ingress allowlist.
 - Custom actor image (OpenClaw + `extensions/substrate`), `@sha256`-pinned in the
   ActorTemplate; gateway Deployment behind a LoadBalancer for the channels.
-- `WorkerPool` (`ate.dev/v1alpha1`, gVisor `SandboxClass`) + `ActorTemplate`
-  (golden snapshot to GCS). runsc comes from the cluster gVisor `SandboxConfig`.
+- `WorkerPool` (`ate.dev/v1`, a `gvisor` sandbox class, the release's
+  `ateworker-gvisor`) + `ActorTemplate` (memory snapshots, golden snapshot to GCS).
+  runsc comes from the cluster gVisor `SandboxConfig`.
 - Actors use the **atespace** model: `kubectl ate create atespace <a>` then
-  `kubectl ate create actor <n> -a <a> --template-ref openclaw-agent` (`--template` on
-  Substrate main), and are addressed through the atenet router, which routes
-  restore-on-demand to worker port 80. release-0.1 picks the actor from Host
-  `<actor>.<atespace>.actors.resources.substrate.ate.dev`; main dropped that and picks
-  it from the `ate-target-actor: <atespace>/<actor>` header. The gateway and dashboard
-  send both, so either works.
+  `kubectl ate create actor <n> -a <a> --template openclaw-agent`, and are addressed
+  through the atenet router over HTTPS, which routes restore-on-demand to worker
+  port 80 and picks the actor from the `ate-target-actor: <atespace>/<actor>`
+  header. The router only accepts clients with a pod identity certificate on the
+  install's allowlist, so the gateway and dashboard mount one.
+- Egress is deny by default with a policy per actor; whoever creates an actor (the
+  plugin, the dashboard, `deploy-demo.sh`) also creates an allow-all `EgressPolicy`
+  for it.
 - Real-time dashboard: lists live actors (via `kubectl-ate` per atespace), the
   golden-snapshot status, the worker-pod map (which actor is restored where), and
   live gateway/WhatsApp status.
@@ -311,11 +314,12 @@ holding rather than how much conversation history is on disk. A heavier agent, a
 larger model client or more loaded skills all move it; a longer chat history
 mostly does not.
 
-The download stage is the one that is plainly addressable. This demo runs
-`onCommit: FULL`, so every actor pulls its own 55–61 MiB snapshot and shares
-nothing with its neighbours. A deployment that can use `onCommit: Data` with a
-golden resume source pulls a mostly shared image instead, which is both smaller
-and cacheable per node. That would not touch the thaw, which is the bigger half.
+The download stage is the one that is plainly addressable. This demo takes
+memory snapshots, so every actor pulls its own 55–61 MiB snapshot and shares
+nothing with its neighbours. A workload that keeps its state on disk can snapshot
+at `VOLUMES` fidelity and cold-boot instead, moving only its data. That trades the
+download for a process start, and would not touch the thaw, which is the bigger
+half.
 
 **Cold workers are a separate trap.** The first resume onto a worker node that has
 never run a sandbox is far slower, and on some builds it fails outright and never

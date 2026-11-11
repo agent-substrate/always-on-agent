@@ -35,12 +35,13 @@ WhatsApp user
   configured against it, and **Agent Substrate installed** on it (all of Step 1).
 - **gcloud** authenticated to a GCP project (`gcloud auth login`), with **Cloud Build**,
   **Container Registry**, and **Cloud Storage** enabled.
-- On your PATH: `kubectl`, `gcloud`, `go` (to build the Substrate CLI), and
-  [`ko`](https://ko.build) (the deploy script builds ateom with it).
+- On your PATH: `kubectl`, `gcloud`, `go` (to run `ate-setup` and build the
+  Substrate CLI), `jq`, and [`crane`](https://github.com/google/go-containerregistry/tree/main/cmd/crane)
+  (the deploy script resolves the release's worker image with it).
 - A **GCS bucket** for golden snapshots, with **both** `atelet` and `ate-api-server`
   granted `roles/storage.objectAdmin` and `roles/storage.bucketViewer` on it. The
-  from-source install in Step 1 provisions no GCP resources at all, so this one is
-  yours to do. `go run github.com/ai-on-gke/substrate-gke/tools/setup-gcp@main bootstrap` does
+  install in Step 1 provisions no GCP resources at all, so this one is yours to
+  do (or let the packaged installer do it). `go run github.com/ai-on-gke/substrate-gke/tools/setup-gcp@main bootstrap` does
   it, and is idempotent against a bucket that already exists, or by hand:
 
   ```bash
@@ -59,6 +60,21 @@ WhatsApp user
   *second* fails with `storage.objects.list` denied and wedges the actor. See the
   note under Step 5. The full role table is in
   [`tools/setup-gcp/README.md`](https://github.com/ai-on-gke/substrate-gke/blob/main/tools/setup-gcp/README.md).
+- **Read access to your image registry** for the nodes and for atelet. The
+  setup-gcp bootstrap gives the nodes their own service account
+  (`ate-gke-node`) with read on Substrate's image repository only, so the
+  gateway image (pulled by the nodes) and the actor image (pulled by atelet)
+  need a grant on the repository this demo pushes to (`gcr.io/$PROJECT_ID` is the
+  `gcr.io` repository in `us`). Without it the gateway sits in `ErrImagePull`:
+
+  ```bash
+  PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+  for m in "serviceAccount:ate-gke-node@$PROJECT_ID.iam.gserviceaccount.com" \
+           "principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT_ID.svc.id.goog/subject/ns/ate-system/sa/atelet"; do
+    gcloud artifacts repositories add-iam-policy-binding gcr.io --location us \
+      --project "$PROJECT_ID" --member="$m" --role=roles/artifactregistry.reader
+  done
+  ```
 - A **Gemini API key**.
 - A phone with **WhatsApp**.
 - **gVisor / runsc note:** the actor is a heavy multi-process Node.js workload, but
@@ -94,59 +110,49 @@ supported in static kubelet mode`. Recreate the node pools afterwards, then
 re-run the install to restore the `ate.dev/substrate-version` node label the
 recreated pools drop.
 
-**Then install:**
+**Then install** Substrate v1.0.0 from its published release images, with the
+gateway and dashboard on the ingress allowlist (the router accepts no client
+that isn't listed):
 
 ```bash
-git clone https://github.com/agent-substrate/substrate.git
+git clone --branch v1.0.0 https://github.com/agent-substrate/substrate.git
 cd substrate
-cp hack/ate-dev-env.sh.example .ate-dev-env.sh   # then edit for your project/cluster
-hack/install-ate.sh --deploy-ate-system
+BUCKET_NAME="$GCS_BUCKET" SNAPSHOT_LOCATION="gs://$GCS_BUCKET/openclaw/" \
+SNAPSHOT_TRANSFER_GSA_NAME=ate-snapshot-transfer \
+ATE_IMAGE_REPO=ghcr.io/agent-substrate/substrate ATE_IMAGE_TAG=v1.0.0 \
+  go run ./cmd/ate-setup deploy ate-system \
+    --credential-provider='{"name":"k8s.io"}' \
+    --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/openclaw/sa/openclaw-gateway,spiffe://cluster.local/ns/openclaw/sa/openclaw-dashboard
 ```
 
-It builds the control plane with ko and installs it, and it provisions no GCP
-resources, so the snapshot bucket and its IAM bindings are yours to create first
-(see Prerequisites). It also cannot upgrade a cluster installed from an older
-build in place; see
+`ate-setup` installs the control plane from the release images, so no ko or
+docker build is needed. It provisions no GCP resources: the snapshot bucket, its
+IAM and the `ate-snapshot-transfer` service account come from
+`go run github.com/ai-on-gke/substrate-gke/tools/setup-gcp@main bootstrap` (see
+Prerequisites). To upgrade a cluster installed from an older build, see
 [`docs/guides/upgrade.md`](https://github.com/agent-substrate/substrate/blob/main/docs/guides/upgrade.md).
 
-Keep this checkout. Step 3 builds the worker pods' `ateom` from it, so that
-component matches the control plane you just installed.
-
-<details>
-<summary>The packaged installer (not usable yet)</summary>
-
+The packaged installer at
 [`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke) wraps all
-of the above in an interactive wizard (`make run`, or `make doctor` for preflight
-checks only) and provisions the GCP resources for you, including the bucket and
-its IAM. It is the nicer path and will become the recommended one.
+of the above in an interactive wizard (`make run`) and provisions the GCP
+resources for you. Enter the two SPIFFE IDs above when it asks for your clients.
 
-It does not work yet. Its default track installs pre-built release images, and at
-v0.1.0 those are not readable outside the project that publishes them, so the
-pull fails with 403 and the installer reports it as an unrelated rollout timeout
-(`waiting for deployment/podcertificate-controller ...: client rate limiter Wait
-returned an error`), which never mentions an image pull. Use the from-source path
-above until that is fixed.
-</details>
-
-You also need the `kubectl-ate` CLI on your PATH, built from the same Substrate
-commit the control plane runs. From that same checkout:
+You also need the `kubectl-ate` CLI on your PATH, from the same release:
 
 ```bash
-make build-atectl && export PATH="$PWD/bin:$PATH"
+go install ./cmd/kubectl-ate
 ```
 
 Verify:
 
 ```bash
-kubectl -n ate-system get pods    # ate-api-server, atelet-<version>, atecontroller, atenet-*, postgres, valkey
+kubectl -n ate-system get pods    # ate-api-server, atelet, ate-controller, atenet-*, postgres
 kubectl ate --version
 ```
 
-> Pinned to Substrate **`c48b3a3c`**, the head of the `release-0.1` branch that
-> v0.1.0 is cut from. Pinned by SHA and not by branch name, since release-0.1 was
-> cut clean off main and still moves. Earlier commits will not work: ActorTemplate
-> stopped being a Kubernetes CRD, and `WorkerPool.spec.ateomImage` was renamed to
-> `workerImage`.
+> Targets Substrate **v1.0.0**. Earlier releases will not work: v1 moved the CRDs
+> to `ate.dev/v1`, reshaped the ActorTemplate, and made actor ingress HTTPS-only
+> with a client allowlist.
 
 ## Step 2: Set your config
 
@@ -154,18 +160,14 @@ kubectl ate --version
 export PROJECT_ID="your-gcp-project"     # for gcr.io/<project>/openclaw-*
 export GCS_BUCKET="your-snapshot-bucket"  # no gs:// prefix; must already exist
 export GEMINI_API_KEY="..."              # LLM provider key
-export SUBSTRATE_REPO=/path/to/substrate # the checkout from Step 1
 # optional:
-# export ATEOM_IMAGE=...                     # prebuilt ateom-gvisor from that same commit,
-#                                            # instead of building it from SUBSTRATE_REPO
+# export SUBSTRATE_REPO=/path/to/substrate   # the v1.0.0 checkout, to have the script install Substrate
+# export ATEOM_IMAGE=...                     # worker image override; default is the release's ateworker-gvisor
 # export WHATSAPP_PEER="+1..."               # enable scheduled status pings (E.164)
 ```
 
-`SUBSTRATE_REPO` is required unless you set `ATEOM_IMAGE`. The worker pods' ateom
-has to be built from the same commit the control plane was installed from,
-because it speaks internal protos to atelet and ateapi, and a skewed build fails
-golden resume with an opaque error instead of a version message. The script
-builds it for you with `ko`, so you need `ko` on your PATH too.
+The worker pods run the release's own `ateworker-gvisor`, pinned by digest, so
+they match the control plane; resolving it needs `crane` on your PATH.
 
 ## Step 3: Deploy
 
@@ -315,7 +317,7 @@ They are not. The timeline is per-actor and says what the control plane did,
 newest first. The event stream is per-operation and says what was asked of it,
 including what it refused: burst more actors than the pool has workers and the
 excess come back `no worker free (HTTP 503)`, which is the only place the
-one-actor-per-ateom rule is visible.
+one-awake-actor-per-worker rule is visible.
 
 Layout changes are checked rather than eyeballed. [`dashboard/preview/`](dashboard/preview/)
 serves the page's HTML straight out of `dashboard.js` next to a captured

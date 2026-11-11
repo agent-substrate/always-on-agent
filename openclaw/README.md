@@ -57,12 +57,13 @@ repo.
 
 ## Quick start (demo)
 
-1. Install Substrate on a GKE cluster from a Substrate checkout with
-   `hack/install-ate.sh --deploy-ate-system`. Create the cluster with the
-   PodCertificate beta APIs enabled, and set up the snapshot bucket and its IAM
-   first; see [`demo/README.md`](demo/README.md) Step 1. (The packaged installer
-   at [`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke) does
-   all of that for you, but its pre-built image track is not usable yet.)
+1. Install Substrate v1.0.0 on a GKE cluster. The packaged installer at
+   [`ai-on-gke/substrate-gke`](https://github.com/ai-on-gke/substrate-gke) does
+   the cluster, bucket, IAM and install for you; or follow
+   [`demo/README.md`](demo/README.md) Step 1, which uses Substrate's `ate-setup`
+   with the published release images. Either way, allow the gateway and
+   dashboard identities through the router (`--ingress-allowed-spiffe-ids`, see
+   Step 1).
 2. `export PROJECT_ID=… GCS_BUCKET=… GEMINI_API_KEY=…`
 3. `cd demo && ./deploy-demo.sh` builds the images, pins them by digest, deploys
    the WorkerPool, ActorTemplate, and gateway, then prints next steps (link
@@ -76,24 +77,25 @@ repo.
 - **Config only, per deployment**: set `plugins.entries.substrate` on the gateway
   (atespace, golden template, actor token, idle timeout) and ACP bindings in
   `openclaw.json`. The actor image runs stock OpenClaw with no plugin.
-- **On the Substrate side** (targets current OSS `agent-substrate/substrate`,
-  CRD group `ate.dev`): apply the `WorkerPool` + `ActorTemplate` manifests
-  (`ate.dev/v1alpha1`), point the gVisor `SandboxConfig` at a runsc build that
-  survives a heavy multi-process Node.js actor, and apply the control-plane
-  changes below. Actors use the **atespace** model
-  (`kubectl ate create atespace <a>; kubectl ate create actor <n> -a <a> --template-ref <name>`,
-  `--template` on Substrate main) and are reached through the atenet router, addressed
-  by Host `<actor>.<atespace>.actors.resources.substrate.ate.dev` on release-0.1 and by
-  the `ate-target-actor: <atespace>/<actor>` header on main. The gateway sends both.
+- **On the Substrate side** (targets Agent Substrate v1.0.0, CRD group
+  `ate.dev/v1`): apply the `WorkerPool` (`ate.dev/v1`) and create the
+  `ActorTemplate` through the API. Actors use the **atespace** model
+  (`kubectl ate create atespace <a>; kubectl ate create actor <n> -a <a> --template <name>`)
+  and are reached through the atenet router over HTTPS, addressed by the
+  `ate-target-actor: <atespace>/<actor>` header. The router only accepts clients
+  with a pod identity certificate on the install's allowlist, so the gateway
+  mounts one (`manifests/gateway.yaml`). Egress is deny by default with a policy
+  per actor; the plugin creates an allow-all policy for each actor it creates
+  (`EGRESS_POLICY_FILE` for a tighter one).
 
 ### Substrate configuration this needs
 
-It runs on stock Substrate. Earlier revisions of this file listed six
-control-plane patches as prerequisites, and that list is obsolete. The cluster
-behind [Measured latency](docs/ARCHITECTURE.md#measured-latency) runs `v0.1.0`
-images for `atecontroller`, `atelet`, `ateom-gvisor` and `atenet` with no source
-changes, the `gvisor-default` `SandboxConfig` exactly as the installer ships it,
-and the default 20s golden warmup. No pinned runsc.
+It runs on stock Substrate, with the `gvisor-default` `SandboxConfig` exactly as
+the installer ships it and the default 20s golden warmup. No pinned runsc.
+Earlier revisions of this file listed six control-plane patches as
+prerequisites, and that list is obsolete. (The figures in
+[Measured latency](docs/ARCHITECTURE.md#measured-latency) were taken on the
+earlier `v0.1.0` images.)
 
 Two of the retired claims were wrong rather than merely stale, and
 [`substrate-patches/README.md`](substrate-patches/README.md) records them so they

@@ -13,7 +13,7 @@
 // limitations under the License.
 /**
  * Shared mTLS gRPC client for the Substrate ateapi control plane
- * (`ateapi.Control`). Used by the gateway-side provisioner (CreateActor) and
+ * (`substrate.ateapi.v1.Control`). Used by the gateway-side provisioner (CreateActor) and
  * idle suspender (SuspendActor).
  *
  * Current OSS ateapi runs auth-mode=mtls: when client cert/key are provided the
@@ -83,8 +83,7 @@ export function createAteApiClient(cfg: AteApiClientConfig): AteApiClient {
       await unary((c) => c.CreateActor, {
         actor: {
           metadata: { atespace: ref.atespace, name: ref.name },
-          actor_template_namespace: templateNamespace,
-          actor_template_name: templateName,
+          actor_template: { atespace: templateNamespace, name: templateName },
         },
       });
     },
@@ -109,7 +108,7 @@ async function build(cfg: AteApiClientConfig): Promise<ControlClient> {
     oneofs: true,
   });
   const pkg = grpc.loadPackageDefinition(def) as any;
-  const Control = pkg.ateapi.Control; // matches server /ateapi.Control/<Method>
+  const Control = pkg.substrate.ateapi.v1.Control; // matches server /substrate.ateapi.v1.Control/<Method>
   return new Control(cfg.address, makeCreds(grpc, cfg)) as ControlClient;
 }
 

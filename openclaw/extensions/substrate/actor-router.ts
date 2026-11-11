@@ -23,12 +23,42 @@
  * its state persists across suspends in that actor's snapshot.
  */
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import os from "node:os";
 import { Readable } from "node:stream";
 
 export const DEFAULT_ACTOR_DOMAIN = "actors.resources.substrate.ate.dev";
-export const DEFAULT_ROUTER_URL = "http://atenet-router.ate-system.svc.cluster.local:80";
+// Substrate v1 serves actor ingress only over HTTPS, to clients presenting a
+// pod identity certificate on the install's --ingress-allowed-spiffe-ids.
+export const DEFAULT_ROUTER_URL = "https://atenet-router.ate-system.svc:443";
+
+// Projected into the gateway pod (manifests/gateway.yaml, router-client volume):
+// this pod's podidentity key and chain, and the CA that signs the router's
+// serving certificate. The kubelet rotates the certificate in place.
+const DEFAULT_CLIENT_BUNDLE = "/run/router-client/credential-bundle.pem";
+const DEFAULT_TRUST_BUNDLE = "/run/router-client/router-trust-bundle.pem";
+
+let tlsCache: { key: string; agent: https.Agent } | undefined;
+
+/** An https.Agent with the current client certificate, rebuilt when the files change. */
+function routerAgent(): https.Agent {
+  const bundle = process.env.ROUTER_CLIENT_BUNDLE || DEFAULT_CLIENT_BUNDLE;
+  const trust = process.env.ROUTER_TRUST_BUNDLE || DEFAULT_TRUST_BUNDLE;
+  const key = `${fs.statSync(bundle).mtimeMs}:${fs.statSync(trust).mtimeMs}`;
+  if (!tlsCache || tlsCache.key !== key) {
+    // The bundle holds the private key and the chain in one PEM, which Node
+    // accepts as both key and cert.
+    const pem = fs.readFileSync(bundle);
+    tlsCache?.agent.destroy();
+    tlsCache = {
+      key,
+      agent: new https.Agent({ keepAlive: true, key: pem, cert: pem, ca: fs.readFileSync(trust) }),
+    };
+  }
+  return tlsCache.agent;
+}
 
 /** The atenet router, overridable with ROUTER_URL. */
 export function routerUrl(): string {
@@ -47,6 +77,15 @@ export function actorHostFor(name: string, atespace: string, domain: string = DE
 }
 
 export type ActorRef = { name: string; atespace: string; domain?: string };
+
+/** This pod's IP: POD_IP from the downward API, else the first non-internal IPv4. */
+function clientIp(): string | undefined {
+  if (process.env.POD_IP) return process.env.POD_IP;
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs ?? []) if (a.family === "IPv4" && !a.internal) return a.address;
+  }
+  return undefined;
+}
 
 /**
  * Sends a request to an actor through the atenet router, addressed both ways
@@ -75,9 +114,18 @@ export function fetchActor(
         method: init.method ?? "GET",
         headers: {
           ...init.headers,
-          Host: actorHostFor(ref.name, ref.atespace, ref.domain),
+          // v1 routes only on ate-target-actor. Host-based routing is the
+          // release-0.1 path and only works over plain HTTP; over TLS the
+          // URL's own host has to match the router's certificate.
+          ...(url.protocol === "https:" ? {} : { Host: actorHostFor(ref.name, ref.atespace, ref.domain) }),
           "ate-target-actor": `${ref.atespace}/${ref.name}`,
+          // v1's ingress adds X-Forwarded-Proto but no X-Forwarded-For, and
+          // OpenClaw refuses a proxied request it cannot attribute to a client
+          // ("proxy_attribution_required"). The gateway is that client, so say
+          // so. Nothing else on the path sets or rewrites the header.
+          ...(clientIp() ? { "X-Forwarded-For": clientIp() as string } : {}),
         },
+        ...(url.protocol === "https:" ? { agent: routerAgent() } : {}),
         signal: init.signal,
       },
       (res) => {

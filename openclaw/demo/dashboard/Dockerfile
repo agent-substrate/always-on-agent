@@ -21,7 +21,7 @@
 # sent none. The dashboard then showed no actors at all while the pod stayed
 # green and the API returned a clean empty list.
 FROM golang:1.27-bookworm AS ate
-ARG SUBSTRATE_COMMIT=c48b3a3c1ac1122dd49da448abe39151681dc271
+ARG SUBSTRATE_COMMIT=v1.0.0
 RUN git clone --filter=blob:none https://github.com/agent-substrate/substrate.git /src \
     && git -C /src checkout --detach "${SUBSTRATE_COMMIT}" \
     && cd /src && CGO_ENABLED=0 go build -o /out/kubectl-ate ./cmd/kubectl-ate

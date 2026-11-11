@@ -64,15 +64,19 @@ serving `/v1/chat/completions`; it does not load this plugin.
 | `atespace` | *(none)* | atespace the per-conversation actors are created in |
 | `template` | *(none)* | golden ActorTemplate new actors derive from, by bare name |
 | `templateForAgent` | *(none)* | optional per-persona template override, keyed by agentId |
-| `actorDomain` | `actors.resources.substrate.ate.dev` | domain in the `Host` sent to atenet (release-0.1 routes by it; main routes by the `ate-target-actor` header, which is always sent too) |
+| `actorDomain` | `actors.resources.substrate.ate.dev` | domain in the `Host` sent to a release-0.1 router over plain HTTP; Substrate v1 routes by the `ate-target-actor` header, which is always sent |
 | `actorToken` | *(none)* | bearer token for the actor's HTTP API |
 | `provisioner` | `ateapi` | `ateapi` (in-band gRPC, needs a podcert) or `kubectl-ate` (shell out) |
 | `kubectlAtePath` | `kubectl-ate` | path to the binary when `provisioner: "kubectl-ate"` |
 | `idleTimeoutSeconds` | 120 | idle time before the gateway suspends the actor |
 | `ateapiAddress` | `api.ate-system.svc.cluster.local:443` | Substrate control plane gRPC |
 
-Turns go to the atenet router, `http://atenet-router.ate-system.svc.cluster.local:80`
-unless the gateway's `ROUTER_URL` environment variable overrides it.
+Turns go to the atenet router over HTTPS, `https://atenet-router.ate-system.svc:443`,
+unless the gateway's `ROUTER_URL` environment variable overrides it. The plugin
+presents the gateway pod's identity certificate from `/run/router-client`
+(`ROUTER_CLIENT_BUNDLE`, `ROUTER_TRUST_BUNDLE`), reloaded when it rotates, and
+creates an allow-all egress policy for each actor it creates (`EGRESS_POLICY_FILE`
+for a tighter one, `EGRESS_POLICY=off` to manage them yourself).
 
 ## Files
 

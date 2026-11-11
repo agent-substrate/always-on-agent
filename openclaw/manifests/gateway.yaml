@@ -15,6 +15,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: openclaw
+  labels:
+    # Substrate v1's NetworkPolicy admits ate-api-server traffic only from
+    # namespaces with this label. Without it kubectl-ate in the gateway and the
+    # dashboard times out dialling the API.
+    ate.dev/api-access: "true"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -227,6 +232,12 @@ spec:
               value: /home/node/state/.openclaw
             - name: NODE_ENV
               value: production
+            # The plugin names the gateway as the client on turns it sends to
+            # actors (X-Forwarded-For), which OpenClaw needs on proxied requests.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             # Lets the plugin's kubectl-ate reach ateapi directly (no deployment lookup).
             - name: ATE_ENDPOINT
               value: "api.ate-system.svc.cluster.local:443"
@@ -280,6 +291,9 @@ spec:
               mountPath: /tmp
             - name: cache-volume
               mountPath: /home/node/state/.cache
+            - name: router-client
+              mountPath: /run/router-client
+              readOnly: true
       volumes:
         - name: openclaw-home
           persistentVolumeClaim:
@@ -295,6 +309,24 @@ spec:
         - name: config
           configMap:
             name: openclaw-gateway-config
+        # Substrate v1 serves actor ingress only over HTTPS, to a client with a
+        # pod identity certificate whose SPIFFE ID the install allows
+        # (spiffe://cluster.local/ns/openclaw/sa/openclaw-gateway, set by
+        # deploy-demo.sh). This projects that certificate and the CA that signs
+        # the router's serving certificate; the plugin reloads them on rotation.
+        - name: router-client
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: router-trust-bundle.pem
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

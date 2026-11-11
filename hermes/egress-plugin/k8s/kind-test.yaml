@@ -1,0 +1,110 @@
+# Hand wired test rig for a kind cluster, matching the shape Substrate's own
+# egress ext_proc uses. Not for production: the production manifest is
+# egress-plugin.yaml, which expects the pluggable filter flag to exist.
+#
+# Three actors with three outcomes, mirroring Substrate's own egress demo:
+#   allowed + credentialed  -> 200, with the header attached
+#   allowed, no credential  -> reaches upstream bare
+#   not on the allowlist    -> 403 from our plugin
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hermes-egress
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: egress-registry
+  namespace: hermes-egress
+data:
+  # Per actor rules. The actor names come from the SPIFFE id in the client
+  # certificate, so they cannot be spoofed by the request.
+  registry.json: |
+    {
+      "agents": {
+        "egress-demo":        {"egress": ["example.com", "neverssl.com"]},
+        "egress-quarantined": {"egress": []}
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hermes-egress-plugin
+  namespace: hermes-egress
+stringData:
+  # A recognisable fake. Nothing real is needed to prove injection happened:
+  # what matters is that the header arrives upstream carrying exactly this.
+  model-key: "TEST-CREDENTIAL-DO-NOT-USE"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-egress-plugin
+  namespace: hermes-egress
+spec:
+  selector:
+    app: hermes-egress-plugin
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes-egress-plugin
+  namespace: hermes-egress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hermes-egress-plugin
+  template:
+    metadata:
+      labels:
+        app: hermes-egress-plugin
+    spec:
+      containers:
+        - name: plugin
+          image: REPLACE_WITH_EGRESS_PLUGIN_IMAGE
+          ports:
+            - containerPort: 50051
+          env:
+            - name: EGRESS_POLICY_SOURCE
+              value: registry
+            - name: EGRESS_REGISTRY_FILE
+              value: /etc/hermes/registry.json
+            # static rather than oauth: a kind cluster has no service account,
+            # and what is under test is the seam, not the token source.
+            - name: MODEL_CREDENTIAL
+              value: static
+            - name: MODEL_KEY_FILE
+              value: /etc/hermes/model-key
+            - name: MODEL_KEY_HEADER
+              value: x-hermes-injected
+            # The demo actor fetches example.com, so that stands in for the
+            # model endpoint here.
+            - name: MODEL_HOST
+              value: example.com
+            - name: EGRESS_FAIL_MODE
+              value: closed
+            - name: EGRESS_EXTPROC_MODES
+              value: headers
+          volumeMounts:
+            - name: registry
+              mountPath: /etc/hermes/registry.json
+              subPath: registry.json
+            - name: key
+              mountPath: /etc/hermes/model-key
+              subPath: model-key
+      volumes:
+        - name: registry
+          configMap:
+            name: egress-registry
+        - name: key
+          secret:
+            secretName: hermes-egress-plugin
+            items:
+              - key: model-key
+                path: model-key

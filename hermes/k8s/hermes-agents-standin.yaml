@@ -1,0 +1,200 @@
+# TEN STAND-IN AGENTS - a hedge, not P4.
+#
+# P4 is Nous's deliverable: the ten agent configurations the acceptance pass is
+# supposed to run against. §7.1 is deliberate about why - "a pass against agents
+# we invented proves the platform, not the product." Nothing in this file
+# changes that. It exists so the soak can start on time if P4 has not landed,
+# and every use of it has to be reported as what it is.
+#
+# If these are used, the report says the ten agents were Substrate's, not Nous's,
+# and T4 and T2 are qualified accordingly. Do not quietly substitute.
+#
+# ---------------------------------------------------------------------------
+# What this cluster cannot do, stated up front rather than discovered mid-soak
+#
+# `hermes-secrets` on substrate-hermes-accept holds API_SERVER_KEY and
+# MODEL_API_KEY and nothing else - there is no TELEGRAM_BOT_TOKEN, and no
+# agents ConfigMap has ever been applied here. So no `deliver_to` on this
+# cluster can succeed, whatever it points at.
+#
+# That is survivable for T3 and fatal for T4, and the two should not be
+# confused:
+#
+#   T3 asks for "zero missed jobs; fire log against schedule". The firing is
+#   observable in the gateway log without any channel, so T3 can be closed here
+#   as a *fire* result, with delivery explicitly out of scope.
+#
+#   T4 asks for a user-visible acknowledgement on the work surface, every time.
+#   That cannot be evidenced on this cluster at all. T4 stays blocked on §3.2,
+#   and this file does not unblock it. It is listed here so nobody reads ten
+#   configured agents as ten deliverable channels.
+#
+# `deliver_to` is required by gateway/agents.py - a job without one is a config
+# error - and the registry also refuses to bind one channel to two agents, so
+# they cannot all share a single sink. Each agent therefore gets `telegram:-N`.
+# Negative ids are Telegram's group form and single digits are not real groups,
+# so these are unmistakable non-addresses rather than REPLACE_WITH placeholders
+# somebody might apply believing they work. Delivery will fail loudly and
+# identically for every job, which is the honest behaviour when there is no
+# channel. Before any run where delivery matters, set real chat ids and a
+# TELEGRAM_BOT_TOKEN.
+#
+# ---------------------------------------------------------------------------
+# How the ten are shaped, and why
+#
+# Idle tiers (gateway/agents.py IDLE_TIERS): short=60s, medium=900s,
+# long=3600s, always-on=never suspends.
+#
+#   Six on `short`      - the soak needs cycles, and a 60s idle window is what
+#                         produces them. These carry T1.
+#   Three on `medium`   - 900s. Held closer to genuinely idle for T2's split:
+#                         the plan wants seven cycling overnight and three not.
+#   One on `long`       - 3600s. One agent that sleeps deeply, so T6's clock
+#                         reconciliation has a case with a long gap rather than
+#                         only sixty-second ones.
+#
+# No agent is `always-on`: an actor that never suspends contributes nothing to a
+# suspend/resume soak and holds a worker the other nine need.
+#
+# T2 split, per §5: the three `medium` agents (standin-07/08/09) are the three
+# held idle. The other seven cycle. All ten get the morning question.
+#
+# Each agent is seeded with one durable fact in its `jobs` prompt wording so
+# that T2's morning question has something to depend on that is specific to
+# that agent and cannot be answered from the prompt alone.
+#
+# Cron specs are staggered across the hour rather than aligned, so T3 measures
+# ten independent schedules and not one thundering herd - which is T9's job,
+# and conflating the two would make both unreadable.
+#
+#   kubectl --context REPLACE_WITH_KUBECTL_CONTEXT \
+#     apply -f k8s/hermes-agents-standin.yaml
+#   kubectl --context ... -n hermes rollout restart deploy/hermes-gateway
+#
+# Note the rollout restart: the gateway reads this at start. Restarting it is
+# also what T10 does, so do not do this once the soak is counting.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-agents
+  namespace: hermes
+  labels:
+    hermes.substrate.dev/provenance: substrate-standin
+    hermes.substrate.dev/not: production
+data:
+  agents.json: |
+    {
+      "defaults": { "idle_tier": "short", "timezone": "UTC" },
+      "agents": [
+        {
+          "id": "standin-00",
+          "idle_tier": "short",
+          "timezone": "UTC",
+          "channels": ["telegram:-1"],
+          "jobs": [
+            { "name": "standin-00-tick", "cron": "3,13,23,33,43,53 * * * *",
+              "prompt": "Note the current time and confirm you still remember the shipment reference I gave you.",
+              "deliver_to": "telegram:-1" }
+          ]
+        },
+        {
+          "id": "standin-01",
+          "idle_tier": "short",
+          "timezone": "UTC",
+          "channels": ["telegram:-2"],
+          "jobs": [
+            { "name": "standin-01-tick", "cron": "5,15,25,35,45,55 * * * *",
+              "prompt": "Note the current time and confirm you still remember the ticket number I gave you.",
+              "deliver_to": "telegram:-2" }
+          ]
+        },
+        {
+          "id": "standin-02",
+          "idle_tier": "short",
+          "timezone": "UTC",
+          "channels": ["telegram:-3"],
+          "jobs": [
+            { "name": "standin-02-tick", "cron": "7,17,27,37,47,57 * * * *",
+              "prompt": "Note the current time and confirm you still remember the project name I gave you.",
+              "deliver_to": "telegram:-3" }
+          ]
+        },
+        {
+          "id": "standin-03",
+          "idle_tier": "short",
+          "timezone": "America/Los_Angeles",
+          "channels": ["telegram:-4"],
+          "jobs": [
+            { "name": "standin-03-tick", "cron": "9,29,49 * * * *",
+              "prompt": "Note the current time in your own timezone and confirm you still remember the release tag I gave you.",
+              "deliver_to": "telegram:-4" }
+          ]
+        },
+        {
+          "id": "standin-04",
+          "idle_tier": "short",
+          "timezone": "Europe/London",
+          "channels": ["telegram:-5"],
+          "jobs": [
+            { "name": "standin-04-tick", "cron": "11,31,51 * * * *",
+              "prompt": "Note the current time in your own timezone and confirm you still remember the vendor name I gave you.",
+              "deliver_to": "telegram:-5" }
+          ]
+        },
+        {
+          "id": "standin-05",
+          "idle_tier": "short",
+          "timezone": "UTC",
+          "channels": ["telegram:-6"],
+          "jobs": [
+            { "name": "standin-05-tick", "cron": "19,39,59 * * * *",
+              "prompt": "Note the current time and confirm you still remember the postcode I gave you.",
+              "deliver_to": "telegram:-6" }
+          ]
+        },
+        {
+          "id": "standin-06",
+          "idle_tier": "long",
+          "timezone": "UTC",
+          "channels": ["telegram:-7"],
+          "jobs": [
+            { "name": "standin-06-hourly", "cron": "21 * * * *",
+              "prompt": "You have been asleep for a long stretch. State the current time, then confirm you still remember the serial number I gave you.",
+              "deliver_to": "telegram:-7" }
+          ]
+        },
+        {
+          "id": "standin-07",
+          "idle_tier": "medium",
+          "timezone": "UTC",
+          "channels": ["telegram:-8"],
+          "jobs": [
+            { "name": "standin-07-hourly", "cron": "25 * * * *",
+              "prompt": "State the current time and confirm you still remember the room number I gave you.",
+              "deliver_to": "telegram:-8" }
+          ]
+        },
+        {
+          "id": "standin-08",
+          "idle_tier": "medium",
+          "timezone": "UTC",
+          "channels": ["telegram:-9"],
+          "jobs": [
+            { "name": "standin-08-hourly", "cron": "35 * * * *",
+              "prompt": "State the current time and confirm you still remember the flight number I gave you.",
+              "deliver_to": "telegram:-9" }
+          ]
+        },
+        {
+          "id": "standin-09",
+          "idle_tier": "medium",
+          "timezone": "UTC",
+          "channels": ["telegram:-10"],
+          "jobs": [
+            { "name": "standin-09-hourly", "cron": "45 * * * *",
+              "prompt": "State the current time and confirm you still remember the invoice number I gave you.",
+              "deliver_to": "telegram:-10" }
+          ]
+        }
+      ]
+    }

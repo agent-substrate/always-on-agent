@@ -1,0 +1,80 @@
+# The benchmark control, and the light pre-warm pass.
+#
+# Two jobs, both of which want the smallest possible workload:
+#
+#   1. Measure the FIXED cost of a restore on OUR hardware and OUR build, so the
+#      "fixed + size-dependent" split of the Hermes number stops being a two-point
+#      line drawn across two clusters, two machine types and two builds. See
+#      deploy/ctrl_floor_run.py.
+#   2. Warm the per-node gVisor asset before anything is measured. A worker that has
+#      never run a sandbox extracts that asset on its first restore, and through a
+#      request-driven resume the caller's deadline expires mid-extraction and every
+#      retry restarts it, so the actor wedges in RESUMING permanently. See
+#      deploy/prewarm_workers.py, which defaults to this template.
+#
+# This warms the NODE-level cache only. The actor image layer cache is per image, so
+# the pool still has to be warmed a second time against the real template. Warming
+# only with this one is not warm.
+#
+# Everything is held identical to the Hermes template except the workload:
+#   - same cluster, same c2d worker nodes, same WorkerPool (workload: hermes)
+#   - same sandboxClass and SandboxConfig, same bucket, same build
+#
+# The workload is deliberately the floor: busybox asleep. That is BELOW the upstream
+# glutton actor (a small Go server), so the fixed cost this produces is a lower bound,
+# which is the conservative direction for the claim.
+#
+# No readyz: nothing serves, so there is no probe to hold ResumeActor open. That does
+# not affect the comparison, because the figure of interest is read from the atelet
+# restore histograms, not from the RPC round trip.
+#
+# No trust bundle and no durable directory either. busybox never egresses, and a
+# durableDir would put a per-restore data path into the number this template exists to
+# isolate.
+#
+# NOT a Kubernetes object. Same as k8s/hermes-actortemplate.yaml: the CRD went away on
+# 2026-09-02 and templates are created through the Substrate API. This file is fed in
+# with REPLACE_WITH_SNAPSHOT_PREFIX already substituted:
+#
+#     sed "s|REPLACE_WITH_SNAPSHOT_PREFIX|gs://$BUCKET_NAME/$ATESPACE|; \
+#          s|REPLACE_WITH_ATESPACE|$ATESPACE|" k8s/ctrl-floor-actortemplate.yaml \
+#       | kubectl-ate create actor-template -f -
+#
+# Snapshots go under a ctrl-floor/ suffix rather than sharing the Hermes prefix,
+# because the growth sampler measures the store by listing object prefixes and a
+# busybox golden sitting in the same tree is indistinguishable from agent data.
+#
+# Delete once measured: it holds a golden actor and a golden snapshot.
+
+metadata:
+  atespace: REPLACE_WITH_ATESPACE
+  name: ctrl-floor
+
+workerSelector:
+  matchLabels:
+    workload: hermes
+
+containers:
+  - name: sleep
+    # The same pinned digest the upstream benchmark uses, so the control is the same
+    # control on both sides of the comparison.
+    image: busybox@sha256:1487d0af5f52b4ba31c7e465126ee2123fe3f2305d638e7827681e7cf6c83d5e
+    command: ["/bin/sleep", "1000000"]
+
+# 256Mi matches benchmarking/workloads/deploy.sh's ACTOR_MEMORY default.
+#
+# limits is a LIST of {name, quantity}, not the Kubernetes map. The old CRD took
+# `limits: {memory: 256Mi}` and the API does not; it rejects that as a proto syntax
+# error pointing at a byte offset, which is not a readable way to be told the shape
+# changed. Only cpu and memory are accepted, each at most once.
+resources:
+  limits:
+    cpuMillicores: 250
+    memoryBytes: 268435456 # 256Mi
+
+
+snapshotConfig:
+  # Memory, matching what the upstream glutton template relies on. The Hermes
+  # template uses VOLUMES, but a control that captures no memory measures a different
+  # thing from the restore path being compared against.
+  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY

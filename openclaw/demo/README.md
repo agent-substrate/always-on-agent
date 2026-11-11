@@ -40,7 +40,7 @@ WhatsApp user
 - A **GCS bucket** for golden snapshots, with **both** `atelet` and `ate-api-server`
   granted `roles/storage.objectAdmin` and `roles/storage.bucketViewer` on it. The
   from-source install in Step 1 provisions no GCP resources at all, so this one is
-  yours to do. `go run ./tools/setup-gcp bootstrap` from a Substrate checkout does
+  yours to do. `go run github.com/ai-on-gke/substrate-gke/tools/setup-gcp@main bootstrap` does
   it, and is idempotent against a bucket that already exists, or by hand:
 
   ```bash
@@ -58,7 +58,7 @@ WhatsApp user
   each actor still works, because there is no replaced snapshot to collect yet. The
   *second* fails with `storage.objects.list` denied and wedges the actor. See the
   note under Step 5. The full role table is in
-  [`tools/setup-gcp/README.md`](https://github.com/agent-substrate/substrate/blob/main/tools/setup-gcp/README.md).
+  [`tools/setup-gcp/README.md`](https://github.com/ai-on-gke/substrate-gke/blob/main/tools/setup-gcp/README.md).
 - A **Gemini API key**.
 - A phone with **WhatsApp**.
 - **gVisor / runsc note:** the actor is a heavy multi-process Node.js workload, but
@@ -107,7 +107,7 @@ It builds the control plane with ko and installs it, and it provisions no GCP
 resources, so the snapshot bucket and its IAM bindings are yours to create first
 (see Prerequisites). It also cannot upgrade a cluster installed from an older
 build in place; see
-[`docs/upgrade.md`](https://github.com/agent-substrate/substrate/blob/main/docs/upgrade.md).
+[`docs/guides/upgrade.md`](https://github.com/agent-substrate/substrate/blob/main/docs/guides/upgrade.md).
 
 Keep this checkout. Step 3 builds the worker pods' `ateom` from it, so that
 component matches the control plane you just installed.

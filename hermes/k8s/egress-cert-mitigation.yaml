@@ -1,0 +1,149 @@
+# Mitigation for O-15 - atenet-egress serves an expired certificate after rotation.
+#
+# APPLIED 27 Aug on the acceptance cluster. This is a workaround for a platform
+# bug, and it restarts a component in ate-system on a timer, which is not a thing
+# to do quietly - read the tracker entry before applying it anywhere else.
+#
+# ## It was broken for its first nine hours. Two defects, both here, 27 Aug
+#
+# The 03:00Z run failed three times with StartError and nobody noticed, because
+# "applied and verified" had checked that the CronJob object existed rather than
+# that a run of it succeeded. The same self-defeating shape as the roleRef
+# pre-check that passed on the manifest it existed to catch.
+#
+#   1. `registry.k8s.io/kubectl` is distroless. There is no `/bin/sh`, so a
+#      `command: [/bin/sh, -c, ...]` dies at container init:
+#      `exec: "/bin/sh": stat /bin/sh: no such file or directory`, exit 128.
+#      Now invokes the kubectl binary directly.
+#   2. `rollout status` watches the Deployment, and the Role grants only get and
+#      patch. It would have failed on RBAC the moment the shell problem was
+#      fixed. Dropped rather than widened: without a shell there is nothing to
+#      chain the two calls with, and the job's own success already reports
+#      whether the patch landed. A rollout that then fails to become ready is a
+#      visibly unhealthy Deployment, which is a different signal and not one
+#      this CronJob should be inventing.
+#
+# The schedule moved from 03:00/15:00 to 05:00/17:00 for an unrelated reason: the
+# 15:00 run collided with the T2 morning read window, and restarting the gateway
+# underneath a test that is measuring conversation continuity would have produced
+# a failure indistinguishable from the thing T2 tests.
+#
+# The bug: envoy's listener certificate comes from a projected podCertificate
+# volume that kubelet rotates every 24h, and envoy never reloads it -
+# `ssl_context_update_by_sds` is 0 for the life of the process. It keeps serving
+# the old leaf until it expires, then resets every actor's egress handshake. The
+# affected turns return HTTP 200 with a message blaming the model provider, so
+# nothing alerts and the wrong component gets the blame.
+#
+# **The schedule is every 12 hours, and that is not a safety margin - a daily
+# restart is actively wrong here.** The signer issues a fresh 24h certificate at
+# *pod start*, not on a fixed daily boundary: the current pod started
+# 07:29:14Z and serves a leaf valid 07:27:14Z -> 07:27:14Z the next day, i.e.
+# notBefore is backdated ~2 minutes from pod creation and notAfter is exactly 24h
+# after that. So a CronJob with a 24h period restarts the pod roughly two minutes
+# *after* the certificate it minted last time has already expired, and the
+# steady state is a short egress outage every single day - the exact failure this
+# file exists to prevent, on a schedule, looking like a flaky model provider.
+#
+# The restart period must be comfortably shorter than the certificate lifetime.
+# 12h against 24h means the served leaf always has at least ~12h of validity
+# left, and a missed or delayed run has half a day of slack before it matters.
+#
+# Verify after the first run rather than trusting this comment - the lifetime is
+# the signer's choice and there is no maxExpirationSeconds pinning it:
+#   kubectl -n ate-system get pod -l app=atenet-egress -o jsonpath='{.items[0].status.startTime}'
+#   curl -s localhost:15000/certs | grep -A1 cert_chain
+#
+# Two things this does NOT do, both deliberate:
+#
+#   It does not detect the fault. It hides it on a schedule. If the soak still
+#   sees egress resets, the restart timer is not evidence that O-15 was ruled
+#   out - check `ssl_context_update_by_sds` and the served leaf's expiry.
+#
+#   It does not help an already-broken listener. Between expiry and the next
+#   scheduled restart, egress is down. The window is small if the schedule is
+#   right and total if it is wrong.
+#
+# A probe is the better mitigation and is not written here because it needs
+# somewhere to alert. If the soak runs unattended, prefer:
+#   curl -s localhost:15000/stats | grep expiration_unix_time_seconds
+# compared against `date +%s`, alerting under ~30 minutes of remaining validity.
+#
+#   kubectl --context REPLACE_WITH_KUBECTL_CONTEXT \
+#     apply -f k8s/egress-cert-mitigation.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: egress-cert-restarter
+  namespace: ate-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: egress-cert-restarter
+  namespace: ate-system
+rules:
+  # Scoped to the one deployment by name. A restarter that can restart anything
+  # in ate-system is a bigger grant than this problem justifies.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["atenet-egress"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: egress-cert-restarter
+  namespace: ate-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: egress-cert-restarter
+subjects:
+  - kind: ServiceAccount
+    name: egress-cert-restarter
+    namespace: ate-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: egress-cert-restarter
+  namespace: ate-system
+  annotations:
+    substrate.dev/why: >-
+      Workaround for O-15: envoy does not reload the rotated servicedns
+      podCertificate. Remove this once the reload works upstream.
+spec:
+  # Every 12h, NOT daily. See the header: a 24h period lands after the cert it
+  # minted has already expired. Do not "simplify" this back to one run a day.
+  schedule: "0 5,17 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: egress-cert-restarter
+          restartPolicy: Never
+          containers:
+            - name: restart
+              image: registry.k8s.io/kubectl:v1.33.1
+              # No shell in this image, and nothing here needs one. Do not
+              # reintroduce `sh -c` to chain a `rollout status` onto the end:
+              # that is what broke it the first time, and the status call needs
+              # watch on the Deployment, which the Role deliberately withholds.
+              command: ["kubectl"]
+              args:
+                - "-n"
+                - "ate-system"
+                - "rollout"
+                - "restart"
+                - "deploy/atenet-egress"
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { memory: 128Mi }

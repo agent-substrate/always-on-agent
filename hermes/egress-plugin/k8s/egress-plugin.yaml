@@ -1,0 +1,227 @@
+# The egress plugin Substrate calls to authorise and credential actor egress.
+#
+# Wire it up at INSTALL time, not afterwards:
+#
+#   hack/install-ate.sh --deploy-ate-system \
+#     --experimental-use-sdsmint \
+#     --experimental-additional-egress-extproc-service=hermes/hermes-egress-plugin:50051
+#
+# The second flag requires the first, and the install rewrites the atenet-egress
+# ConfigMap, so patching Envoy afterwards is silently reverted.
+#
+# THE SERVICE NAME AND NAMESPACE BELOW ARE PART OF THE TLS CONTRACT. The
+# generated Envoy cluster pins match_typed_subject_alt_names to DNS
+# `<service>.<namespace>.svc`, and the certificate carrying that SAN is issued by
+# the servicedns signer to the pods this Service selects. Rename either, and the
+# flag has to be changed and the cluster reinstalled -- a plain `kubectl apply`
+# leaves a gateway that refuses to talk to us, which under
+# failure_mode_allow: false means no actor can reach the network at all.
+#
+# ORDERING. Substrate must be installed with the flag BEFORE this is applied,
+# because the projected pod certificate is issued by a controller the install
+# deploys. Between the install and this rollout, all actor egress is down.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hermes-egress-plugin
+  namespace: hermes
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-egress-plugin
+  namespace: hermes
+spec:
+  selector:
+    app: hermes-egress-plugin
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes-egress-plugin
+  namespace: hermes
+spec:
+  # Two replicas because this is in the path of every outbound call an actor
+  # makes: a single pod restarting takes the whole fleet's egress with it.
+  replicas: 2
+  # maxSurge MUST be 0, and that is a consequence of the anti-affinity below
+  # rather than a preference. Hard anti-affinity allows one replica per node, so
+  # on a cluster with two schedulable non-worker nodes there is nowhere for a
+  # third pod to go: the default RollingUpdate surges to three, the extra pod
+  # sits Pending forever, and `rollout status` never returns. Replacing in place
+  # keeps one replica serving throughout, which is what the PodDisruptionBudget
+  # below also asks for.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: hermes-egress-plugin
+  template:
+    metadata:
+      labels:
+        app: hermes-egress-plugin
+    spec:
+      serviceAccountName: hermes-egress-plugin
+      # Two replicas on one node is one drain away from being zero replicas, and
+      # zero replicas is a fleet-wide egress outage rather than a slow request.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: hermes-egress-plugin
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: plugin
+          image: REPLACE_WITH_EGRESS_PLUGIN_IMAGE
+          ports:
+            - containerPort: 50051
+          env:
+            # static, registry or passthrough. See policy.go: passthrough is
+            # what to use once Substrate's own per-actor egress policy API
+            # lands, so the same rule is not enforced in two places.
+            # registry: per actor destination lists, rendered by
+            # `hermesctl egress-on` from EGRESS_ALLOW into the egress-registry
+            # ConfigMap. static allows one host for everyone; passthrough is
+            # what to use once Substrate's own per actor egress policy API
+            # lands, so the same rule is not enforced in two places.
+            - name: EGRESS_POLICY_SOURCE
+              value: registry
+            - name: EGRESS_REGISTRY_FILE
+              value: /etc/hermes/registry.json
+            # Seeds the allowlist every actor gets, so it has to be the host the
+            # actors' model actually lives on. Gemini here, matching MODEL_PROVIDER
+            # in the env file; an OpenAI fleet wants api.openai.com and, once
+            # MODEL_CREDENTIAL stops being none, a different MODEL_KEY_HEADER with
+            # it. Getting this wrong denies every model call at request time rather
+            # than failing at startup, so change it in the same commit as EGRESS_ALLOW.
+            - name: MODEL_HOST
+              value: generativelanguage.googleapis.com
+            # oauth mints a short lived token from a service account and
+            # refreshes it in the background; static reads a plain API key from
+            # a file. oauth is preferred: if a credential ever leaks, an hour on
+            # one scope beats a standing key that never expires.
+            # none holds no credential and enforces destinations only, which is
+            # the honest setting on Substrate's egress chain: egress terminates
+            # CONNECT, so no header the plugin adds reaches the upstream. See the
+            # Status section of egress-plugin/README.md. Switch to oauth or
+            # static on a chain that carries the real request, and supply the
+            # matching secret below.
+            - name: MODEL_CREDENTIAL
+              value: none
+            - name: MODEL_SA_KEY_FILE
+              value: /etc/hermes/credential/model-sa-key
+            - name: MODEL_SCOPES
+              value: https://www.googleapis.com/auth/cloud-platform
+            # Used only when MODEL_CREDENTIAL=static, so it is inert today. It does
+            # match MODEL_HOST above, which is the state to keep it in: the two drift
+            # apart silently and only bite whenever someone turns static on.
+            # OpenAI wants `Authorization` and a `Bearer ` prefix, Google's
+            # generative-language API wants a raw key in `x-goog-api-key` and
+            # answers a bearer token with a 401 about OAuth that sends you looking
+            # in the wrong place. Change this the moment MODEL_CREDENTIAL is not none.
+            - name: MODEL_KEY_HEADER
+              value: x-goog-api-key
+            # closed | open. Closed refuses a request whose caller cannot be
+            # identified. Open lets it through UNCREDENTIALED and is for
+            # diagnosis only.
+            - name: EGRESS_FAIL_MODE
+              value: closed
+            # mtls | insecure. The egress gateway dials mutual TLS and will not
+            # connect to a plaintext listener, so `insecure` is only for kind,
+            # where there is no pod-certificate controller to issue from.
+            - name: EGRESS_TLS_MODE
+              value: mtls
+          volumeMounts:
+            # TWO signers, and swapping them fails every handshake silently.
+            # servicedns is the identity we PRESENT (the gateway pins its DNS
+            # SAN); podidentity is the CA that signed the GATEWAY, so it is what
+            # we verify the client against. See transport.go.
+            - name: servicedns
+              mountPath: /run/servicedns.podcert.ate.dev
+              readOnly: true
+            - name: podidentity
+              mountPath: /run/podidentity.podcert.ate.dev
+              readOnly: true
+            - name: registry
+              mountPath: /etc/hermes/registry.json
+              subPath: registry.json
+              readOnly: true
+            - name: model-credential
+              mountPath: /etc/hermes/credential
+              readOnly: true
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        # Issued by the pod-certificate controller the Substrate install
+        # deploys. The DNS SAN comes for free: the servicedns signer issues for
+        # the Services that select this pod, which is what makes the gateway's
+        # pinned SAN resolvable without us naming it anywhere.
+        #
+        # These ROTATE. The plugin re-reads them per handshake rather than at
+        # startup -- see transport.go.
+        - name: servicedns
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+        # The CA the gateway's own certificate chains to. Only the trust bundle:
+        # we never present a podidentity certificate, we only verify one, so
+        # there is no podCertificate source here.
+        - name: podidentity
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+        - name: registry
+          configMap:
+            name: egress-registry
+        - name: model-credential
+          secret:
+            # optional, because MODEL_CREDENTIAL=none needs no key and the plugin
+            # must still start on a cluster that holds no model secret.
+            optional: true
+            # The credential lives here, with the plugin, and never enters an
+            # actor's sandbox. That is the whole point of the exercise.
+            secretName: hermes-secrets
+            items:
+              - key: MODEL_SA_KEY
+                path: model-sa-key
+---
+# Every outbound call from every actor goes through this, and the filter is
+# failure_mode_allow: false, so an eviction that takes both replicas at once is a
+# total egress outage for the fleet. A node drain will otherwise happily do that.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hermes-egress-plugin
+  namespace: hermes
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: hermes-egress-plugin

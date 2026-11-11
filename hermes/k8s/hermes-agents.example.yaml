@@ -1,0 +1,47 @@
+# The agent registry: how messages reach each agent, how long it stays
+# warm, and what it does on a schedule. See gateway/agents.py.
+#
+# TEMPLATE - NOT APPLIED BY ANY SCRIPT, and not applyable as-is.
+#
+# Mounted at AGENTS_CONFIG=/etc/hermes/agents.json by k8s/hermes-gateway.yaml, whose
+# volume is `optional: true`. With no ConfigMap the gateway gives every conversation its
+# own agent on the default idle tier, which is what demo/validate.sh and demo/demo.sh do.
+# You only need this file once you want to bind channels to a named agent, or give
+# one a schedule.
+#
+# Before applying, replace every REPLACE_WITH_CHAT_ID. A Telegram chat id is an integer
+# (negative for groups); get yours from demo/telegram_go_live.sh, which prints it. Leaving
+# the placeholder in place is worse than omitting the file: the registry accepts it, so the
+# morning-brief job below becomes a live schedule that wakes the actor at 08:45 every
+# weekday, spends a model call, and then fails to deliver.
+#
+#   $EDITOR k8s/hermes-agents.example.yaml       # or copy it somewhere private first
+#   kubectl apply -f k8s/hermes-agents.example.yaml
+#   kubectl -n hermes rollout restart deploy/hermes-gateway
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-agents
+  namespace: hermes
+data:
+  agents.json: |
+    {
+      "defaults": { "idle_tier": "short", "timezone": "UTC" },
+      "agents": [
+        {
+          "id": "demo-agent",
+          "idle_tier": "medium",
+          "timezone": "America/Los_Angeles",
+          "channels": ["telegram:REPLACE_WITH_CHAT_ID"],
+          "jobs": [
+            {
+              "name": "morning-brief",
+              "cron": "45 8 * * 1-5",
+              "prompt": "Good morning. Briefly summarise anything I asked you to keep track of.",
+              "deliver_to": "telegram:REPLACE_WITH_CHAT_ID"
+            }
+          ]
+        }
+      ]
+    }

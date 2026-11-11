@@ -1,0 +1,95 @@
+# Copyright 2026 Nous Research
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Restart the atenet components before their TLS certificate expires.
+#
+# The certificate is short-lived and rotated by the platform, and the serving
+# process does not reload it: it keeps offering the old one until it expires, at
+# which point every connection to an actor fails with "remote connection
+# failure" and every turn 503s. Nothing logs a rotation it did not perform, so
+# the only symptom is that agents stop answering.
+#
+# TWELVE hours, not twenty-four, and that is the whole point. The certificate is
+# minted at pod start and expires exactly 24h later, so a daily restart fires
+# just AFTER the certificate it last minted has died, producing a short outage
+# every day: the exact fault this exists to prevent, on a schedule.
+#
+# This is a mitigation, not a fix. It hides the fault rather than detecting it.
+# If turns still fail with connection errors, the timer is not evidence that
+# this was ruled out; check the served certificate's expiry directly. The
+# permanent fix belongs upstream, in the component that should reload.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: atenet-cert-refresh
+  namespace: ate-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: atenet-cert-refresh
+  namespace: ate-system
+rules:
+  # Scoped to restarting workloads in this namespace and nothing else. A
+  # restart is a patch of the pod template's annotations.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: atenet-cert-refresh
+  namespace: ate-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: atenet-cert-refresh
+subjects:
+  - kind: ServiceAccount
+    name: atenet-cert-refresh
+    namespace: ate-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: atenet-cert-refresh
+  namespace: ate-system
+spec:
+  schedule: "0 */12 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: atenet-cert-refresh
+          restartPolicy: OnFailure
+          containers:
+            - name: restart
+              image: bitnami/kubectl:1.31
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  kubectl rollout restart deploy/atenet-router  -n ate-system
+                  kubectl rollout restart deploy/atenet-egress  -n ate-system
+                  kubectl rollout restart daemonset/atelet      -n ate-system
+                  kubectl rollout status  deploy/atenet-router  -n ate-system --timeout=300s
+                  kubectl rollout status  deploy/atenet-egress  -n ate-system --timeout=300s
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits:   {cpu: 200m, memory: 128Mi}

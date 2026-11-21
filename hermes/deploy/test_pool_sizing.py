@@ -36,6 +36,10 @@ DAY0 = datetime(2026, 9, 7, 0, 0, tzinfo=UTC)
 
 # ---- day and time parsing ----
 check("Mon-Fri is five weekdays", ps.parse_days("Mon-Fri") == {0, 1, 2, 3, 4})
+check("Sun-Thu wraps cleanly for Sun..Thu workweeks",
+      ps.parse_days("Sun-Thu") == {6, 0, 1, 2, 3})
+check("Fri-Mon wraps across weekend",
+      ps.parse_days("Fri-Mon") == {4, 5, 6, 0})
 check("a comma list is taken literally", ps.parse_days("Mon,Wed,Fri") == {0, 2, 4})
 check("hh:mm is minutes past midnight", ps.parse_hhmm("08:45") == 525)
 
@@ -47,6 +51,10 @@ check("fires are one day apart", all(
     abs((b - a) - 86400) < 1 for a, b in zip(fires, fires[1:])))
 
 check("'*' fires every day", len(ps.cron_minutes("0 9 * * *", UTC, DAY0, 7)) == 7)
+check("wrap-around cron dow 5-0 fires Fri, Sat, Sun",
+      len(ps.cron_minutes("0 9 * * 5-0", UTC, DAY0, 7)) == 3)
+check("cron dow 7 alias matches Sunday",
+      ps.cron_minutes("0 9 * * 7", UTC, DAY0, 7) == ps.cron_minutes("0 9 * * 0", UTC, DAY0, 7))
 
 # cron counts Sunday as 0, Python counts Monday as 0. Getting this off by one
 # puts a Monday brief on a Sunday, where it wakes an agent nobody is reading.
@@ -115,6 +123,23 @@ try:
 except ValueError as e:
     check("but the gaps reading says which field is missing, and whose",
           "median_gap_minutes" in str(e) and "a:" in str(e), str(e))
+
+# Overnight active hours (e.g., 22:00-06:00) and non-positive median gaps.
+overnight = {"id": "night-ops", "idle_tier": "short", "timezone": "UTC",
+             "duty_cycle": {"messages_per_workday": 3, "median_gap_minutes": 120,
+                            "active_hours": "22:00-06:00", "active_days": "Sun-Thu"}}
+night_iv = ps.agent_intervals(overnight, {}, DAY0, 7, 45.0, rng, True)
+check("overnight active_hours on Sun-Thu produces intervals", len(night_iv) > 0, night_iv)
+
+try:
+    ps.agent_intervals(
+        {"id": "bad-gap", "idle_tier": "short", "timezone": "UTC",
+         "duty_cycle": {"median_gap_minutes": 0, "active_hours": "09:00-18:00",
+                        "active_days": "Mon-Fri"}},
+        {}, DAY0, 7, 45.0, rng, False)
+    check("median_gap_minutes <= 0 is refused", False)
+except ValueError:
+    check("median_gap_minutes <= 0 is refused", True)
 
 # ---- peak ----
 check("no intervals is a peak of zero", ps.peak([]) == 0)

@@ -66,13 +66,16 @@ DAYS = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 
 
 def parse_days(spec: str) -> set[int]:
-    """'Mon-Fri' or 'Mon,Wed,Fri' to weekday numbers."""
+    """'Mon-Fri', 'Sun-Thu', or 'Mon,Wed,Fri' to weekday numbers (Mon=0..Sun=6)."""
     out: set[int] = set()
     for part in spec.split(","):
         part = part.strip()
         if "-" in part:
             a, b = (DAYS[x.strip()] for x in part.split("-"))
-            out |= set(range(a, b + 1))
+            if a <= b:
+                out |= set(range(a, b + 1))
+            else:
+                out |= set(range(a, 7)) | set(range(0, b + 1))
         elif part:
             out.add(DAYS[part])
     return out
@@ -105,9 +108,20 @@ def cron_minutes(expr: str, tz: ZoneInfo, day0: datetime, days: int) -> list[flo
         for part in dow.split(","):
             if "-" in part:
                 a, b = (int(x) for x in part.split("-"))
-                want |= set(range(a, b + 1))
+                a = 0 if a == 7 else a
+                b = 0 if b == 7 else b
+                if not (0 <= a <= 6 and 0 <= b <= 6):
+                    raise ValueError(f"cron {expr!r}: weekday {part!r} out of range 0-7")
+                if a <= b:
+                    want |= set(range(a, b + 1))
+                else:
+                    want |= set(range(a, 7)) | set(range(0, b + 1))
             else:
-                want.add(int(part))
+                d_val = int(part)
+                d_val = 0 if d_val == 7 else d_val
+                if not (0 <= d_val <= 6):
+                    raise ValueError(f"cron {expr!r}: weekday {part!r} out of range 0-7")
+                want.add(d_val)
         # cron counts Sunday as 0; Python counts Monday as 0.
         want = {(d - 1) % 7 for d in want}
     out = []
@@ -145,6 +159,8 @@ def agent_intervals(agent: dict, defaults: dict, day0: datetime, days: int,
     # Only the gaps reading uses this. Requiring it in both is how a fleet file
     # that states counts and no gaps gets refused for a field it never needed.
     gap_min = 0.0 if uniform else float(need("median_gap_minutes"))
+    if not uniform and gap_min <= 0:
+        raise ValueError(f"{agent['id']}: median_gap_minutes must be > 0, got {gap_min}")
 
     starts: list[float] = []
     for d in range(days):
@@ -155,7 +171,8 @@ def agent_intervals(agent: dict, defaults: dict, day0: datetime, days: int,
         window_start = (local + timedelta(minutes=start_m)).astimezone(
             day0.tzinfo) - day0
         t0 = window_start.total_seconds()
-        span = (end_m - start_m) * 60.0
+        span_min = (end_m - start_m) if end_m > start_m else (end_m + 1440 - start_m)
+        span = span_min * 60.0
         if uniform:
             # The count is fixed and the placement is random. This is the reading
             # that trusts messages_per_workday.
@@ -284,10 +301,13 @@ def main() -> int:
     print(f"  recommended WorkerPool.replicas: {rec}   ({worst} + {a.headroom} headroom)")
     held = statistics.mean(base["means"])
     print(f"  mean workers held across the week: {held:.1f} of {n} agents")
-    print(f"  so the pool has to be sized for {worst} and is used for {held:.1f}. "
-          f"Peak is {worst / held:.0f}x the mean,")
-    print("  which is the density result: suspension pays on cost, not on the "
-          "ceiling.")
+    if held > 0:
+        print(f"  so the pool has to be sized for {worst} and is used for {held:.1f}. "
+              f"Peak is {worst / held:.0f}x the mean,")
+        print("  which is the density result: suspension pays on cost, not on the "
+              "ceiling.")
+    else:
+        print(f"  so the pool has to be sized for {worst} and mean occupancy is 0.0.")
     if rec >= n:
         print(f"  {rec} is the whole fleet or more. At these idle timeouts "
               "suspension buys")
